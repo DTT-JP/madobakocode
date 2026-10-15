@@ -21,7 +21,7 @@ async function appFetch(r){
 }
 async function preview(req,path){
   const f=await getFile(path)
-  if(!f||f.dir)return new Response('404 Not Found: '+path,{status:404,headers:{'content-type':'text/plain; charset=utf-8','cache-control':'no-store'}})
+  if(!f||f.dir)return new Response(`<!doctype html><meta charset="utf-8"><title>404 Not Found</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#151a1b;color:#e0e3e3;font:16px system-ui,sans-serif}main{text-align:center}h1{font-size:64px;margin:0;color:#8bd5c7}p{color:#aab4b4}</style><main><h1>404</h1><p>ファイルが見つかりません</p><p>${path}</p></main>`,{status:404,headers:{'content-type':'text/html; charset=utf-8','cache-control':'no-store'}})
   const ext=path.split('.').pop().toLowerCase()
   let type=MIME[ext]||(f.data&&f.data.type)||'application/octet-stream'
   if(/^text\/|json|svg|xml/.test(type))type+='; charset=utf-8'
