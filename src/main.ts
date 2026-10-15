@@ -127,33 +127,27 @@ function loadView() {
   const k = t.split('/')[0]
   bin.innerHTML = k === 'image' ? `<img src="${binUrl}">` : k === 'audio' ? `<audio src="${binUrl}" controls></audio>` : k === 'video' ? `<video src="${binUrl}" controls playsinline></video>` : `<div>${esc(base(cur))}<br>${(blob.size / 1024) | 0} KB（プレビュー非対応）</div>`
 }
-function updateNavScrollbar() {
-  const max = navScroll.scrollHeight - navScroll.clientHeight
-  const ratio = navScroll.clientHeight / navScroll.scrollHeight
-  navBar.hidden = max <= 0
+function updateScrollbar(scroll: HTMLElement, bar: HTMLElement, thumb: HTMLElement) {
+  const max = Math.max(0, scroll.scrollHeight - scroll.clientHeight)
+  const height = Math.min(scroll.clientHeight, Math.max(28, scroll.clientHeight * scroll.clientHeight / Math.max(scroll.scrollHeight, 1)))
+  const travel = Math.max(0, bar.clientHeight - height)
+  bar.hidden = max === 0
   if (max > 0) {
-    navThumb.style.height = `${Math.max(28, navScroll.clientHeight * ratio)}px`
-    navThumb.style.transform = `translateY(${(navScroll.clientHeight - navScroll.clientHeight * ratio) * navScroll.scrollTop / max}px)`
+    thumb.style.height = `${height}px`
+    thumb.style.transform = `translateY(${Math.min(travel, Math.max(0, travel * scroll.scrollTop / max))}px)`
   }
 }
+function updateNavScrollbar() { updateScrollbar(navScroll, navBar, navThumb) }
 navScroll.addEventListener('scroll', updateNavScrollbar)
 let navDrag = { y: 0, top: 0 }
 navThumb.addEventListener('pointerdown', (e) => { navDrag = { y: e.clientY, top: navScroll.scrollTop }; navThumb.setPointerCapture(e.pointerId) })
-navThumb.addEventListener('pointermove', (e) => { if (navThumb.hasPointerCapture(e.pointerId)) navScroll.scrollTop = navDrag.top + (e.clientY - navDrag.y) * navScroll.scrollHeight / navScroll.clientHeight })
+navThumb.addEventListener('pointermove', (e) => { if (navThumb.hasPointerCapture(e.pointerId)) navScroll.scrollTop = navDrag.top + (e.clientY - navDrag.y) * (navScroll.scrollHeight - navScroll.clientHeight) / Math.max(1, navBar.clientHeight - navThumb.clientHeight) })
 navThumb.addEventListener('pointerup', (e) => navThumb.releasePointerCapture(e.pointerId))
-function updateTreeScrollbar() {
-  const max = tree.scrollHeight - tree.clientHeight
-  const ratio = tree.clientHeight / tree.scrollHeight
-  treeBar.hidden = max <= 0
-  if (max > 0) {
-    treeThumb.style.height = `${Math.max(28, tree.clientHeight * ratio)}px`
-    treeThumb.style.transform = `translateY(${(tree.clientHeight - tree.clientHeight * ratio) * tree.scrollTop / max}px)`
-  }
-}
+function updateTreeScrollbar() { updateScrollbar(tree, treeBar, treeThumb) }
 tree.addEventListener('scroll', updateTreeScrollbar)
 let treeDrag = { y: 0, top: 0 }
 treeThumb.addEventListener('pointerdown', (e) => { treeDrag = { y: e.clientY, top: tree.scrollTop }; treeThumb.setPointerCapture(e.pointerId) })
-treeThumb.addEventListener('pointermove', (e) => { if (treeThumb.hasPointerCapture(e.pointerId)) tree.scrollTop = treeDrag.top + (e.clientY - treeDrag.y) * tree.scrollHeight / tree.clientHeight })
+treeThumb.addEventListener('pointermove', (e) => { if (treeThumb.hasPointerCapture(e.pointerId)) tree.scrollTop = treeDrag.top + (e.clientY - treeDrag.y) * (tree.scrollHeight - tree.clientHeight) / Math.max(1, treeBar.clientHeight - treeThumb.clientHeight) })
 treeThumb.addEventListener('pointerup', (e) => treeThumb.releasePointerCapture(e.pointerId))
 addEventListener('resize', () => { updateNavScrollbar(); updateTreeScrollbar() })
 function select(p: string) { flush(); cur = p; loadView(); saveUI() }
@@ -280,7 +274,16 @@ function kb(k: string) {
 }
 
 // ---------- preview / console ----------
-const normalizedPreviewPath = () => (previewPathEl.value || previewPath).replace(/^\/+/, '').trim() || 'index.html'
+const normalizedPreviewPath = () => {
+  const raw = (previewPathEl.value || previewPath).trim()
+  const parts: string[] = raw.startsWith('/') ? [] : previewPath.split('/').slice(0, -1)
+  for (const part of raw.replace(/^\/+/, '').split('/')) {
+    if (!part || part === '.') continue
+    if (part === '..') { parts.pop(); continue }
+    parts.push(part)
+  }
+  return parts.join('/') || 'index.html'
+}
 const previewUrl = () => new URL('__preview__/' + normalizedPreviewPath().split('/').map(encodeURIComponent).join('/'), document.baseURI).href + '?t=' + Date.now()
 function reload() { flush(); previewPath = normalizedPreviewPath(); previewPathEl.value = '/' + previewPath; cl.innerHTML = ''; ifr.src = previewUrl() }
 function goPreview() { previewPath = normalizedPreviewPath(); reload() }

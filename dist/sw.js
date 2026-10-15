@@ -4,13 +4,14 @@ const HOOK='<script>(()=>{const s=(l,a)=>{try{parent.postMessage({__con:[l,a.map
 let dbp
 const db=()=>dbp||(dbp=new Promise((res,rej)=>{const r=indexedDB.open('madobakocode',1);r.onupgradeneeded=()=>{r.result.createObjectStore('fs',{keyPath:'path'});r.result.createObjectStore('kv')};r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)}))
 const getFile=async p=>{const d=await db();return new Promise(res=>{const r=d.transaction('fs').objectStore('fs').get(p);r.onsuccess=()=>res(r.result);r.onerror=()=>res(null)})}
+const normalizePath=p=>{const a=[];for(const x of p.split('/')){if(!x||x==='.'){continue}if(x==='..'){a.pop();continue}a.push(x)}return a.join('/')||'index.html'}
 self.addEventListener('install',()=>self.skipWaiting())
 self.addEventListener('activate',e=>e.waitUntil(clients.claim()))
 self.addEventListener('fetch',e=>{
   const u=new URL(e.request.url)
   if(u.origin!==location.origin||e.request.method!=='GET')return
   const i=u.pathname.indexOf('/__preview__/')
-  if(i>=0)return e.respondWith(preview(e.request,decodeURIComponent(u.pathname.slice(i+13))||'index.html'))
+  if(i>=0)return e.respondWith(preview(e.request,normalizePath(decodeURIComponent(u.pathname.slice(i+13)))))
   e.respondWith(appFetch(e.request))
 })
 async function appFetch(r){
