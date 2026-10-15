@@ -1,0 +1,45 @@
+// 1) アプリ本体のキャッシュ（PWA）  2) __preview__/* を IndexedDB から配信
+const MIME={html:'text/html',htm:'text/html',css:'text/css',js:'text/javascript',mjs:'text/javascript',json:'application/json',svg:'image/svg+xml',txt:'text/plain',md:'text/markdown',csv:'text/csv',xml:'application/xml',png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',gif:'image/gif',webp:'image/webp',avif:'image/avif',ico:'image/x-icon',mp3:'audio/mpeg',wav:'audio/wav',ogg:'audio/ogg',m4a:'audio/mp4',aac:'audio/aac',mp4:'video/mp4',webm:'video/webm',mov:'video/quicktime',woff:'font/woff',woff2:'font/woff2',ttf:'font/ttf',otf:'font/otf',wasm:'application/wasm'}
+const HOOK='<script>(()=>{const s=(l,a)=>{try{parent.postMessage({__con:[l,a.map(x=>{try{return typeof x==="string"?x:x instanceof Error?(x.stack||String(x)):(JSON.stringify(x)??String(x))}catch(e){return String(x)}}).join(" ")]},"*")}catch(e){}};for(const l of["log","info","warn","error","debug"]){const o=console[l];console[l]=(...a)=>{s(l,a);o.apply(console,a)}}addEventListener("error",e=>s("error",[e.message+" ("+(e.filename||"").split("/").pop()+":"+e.lineno+")"]));addEventListener("unhandledrejection",e=>s("error",["Unhandled: "+((e.reason&&e.reason.stack)||e.reason)]))})()<\/script>'
+let dbp
+const db=()=>dbp||(dbp=new Promise((res,rej)=>{const r=indexedDB.open('madobakocode',1);r.onupgradeneeded=()=>{r.result.createObjectStore('fs',{keyPath:'path'});r.result.createObjectStore('kv')};r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)}))
+const getFile=async p=>{const d=await db();return new Promise(res=>{const r=d.transaction('fs').objectStore('fs').get(p);r.onsuccess=()=>res(r.result);r.onerror=()=>res(null)})}
+self.addEventListener('install',()=>self.skipWaiting())
+self.addEventListener('activate',e=>e.waitUntil(clients.claim()))
+self.addEventListener('fetch',e=>{
+  const u=new URL(e.request.url)
+  if(u.origin!==location.origin||e.request.method!=='GET')return
+  const i=u.pathname.indexOf('/__preview__/')
+  if(i>=0)return e.respondWith(preview(e.request,decodeURIComponent(u.pathname.slice(i+13))||'index.html'))
+  e.respondWith(appFetch(e.request))
+})
+async function appFetch(r){
+  const c=await caches.open('app')
+  const hit=await c.match(r,{ignoreSearch:true})
+  const net=fetch(r).then(x=>{if(x.ok)c.put(r,x.clone());return x}).catch(()=>null)
+  return hit||(await net)||Response.error()
+}
+async function preview(req,path){
+  const f=await getFile(path)
+  if(!f||f.dir)return new Response('404 Not Found: '+path,{status:404,headers:{'content-type':'text/plain; charset=utf-8','cache-control':'no-store'}})
+  const ext=path.split('.').pop().toLowerCase()
+  let type=MIME[ext]||(f.data&&f.data.type)||'application/octet-stream'
+  if(/^text\/|json|svg|xml/.test(type))type+='; charset=utf-8'
+  const h={'content-type':type,'cache-control':'no-store','accept-ranges':'bytes'}
+  if(ext==='html'||ext==='htm'){
+    let t=typeof f.data==='string'?f.data:await f.data.text()
+    const m=/<head[^>]*>/i.exec(t)||/<html[^>]*>/i.exec(t)||/^\s*<!doctype[^>]*>/i.exec(t)
+    const i=m?m.index+m[0].length:0
+    return new Response(t.slice(0,i)+HOOK+t.slice(i),{headers:h})
+  }
+  const blob=f.data instanceof Blob?f.data:new Blob([f.data||''])
+  const rg=/bytes=(\d*)-(\d*)/.exec(req.headers.get('range')||'')
+  if(rg){
+    const n=blob.size
+    const s=rg[1]===''?Math.max(0,n-+rg[2]):+rg[1]
+    const en=rg[1]===''||rg[2]===''?n-1:Math.min(+rg[2],n-1)
+    if(s>=n)return new Response(null,{status:416,headers:{'content-range':'bytes */'+n}})
+    return new Response(blob.slice(s,en+1),{status:206,headers:{...h,'content-range':`bytes ${s}-${en}/${n}`,'content-length':String(en-s+1)}})
+  }
+  return new Response(blob,{headers:{...h,'content-length':String(blob.size)}})
+}
