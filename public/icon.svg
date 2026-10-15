@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="room" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3a8f8a"/><stop offset="1" stop-color="#2c6f73"/></linearGradient>
+    <clipPath id="pane"><rect x="106" y="106" width="300" height="300"/></clipPath>
+  </defs>
+  <!-- 壁（窓の外） -->
+  <rect width="512" height="512" rx="96" fill="#d98c5f"/>
+  <!-- 窓の中（のぞいた先） -->
+  <rect x="106" y="106" width="300" height="300" fill="url(#room)"/>
+  <g clip-path="url(#pane)">
+    <path d="M106 106H236L106 236Z" fill="#fff" opacity=".1"/>
+    <!-- 箱から出てくるコード -->
+    <g fill="none" stroke="#f4fbff" stroke-width="15" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M216 176L176 212L216 248"/>
+      <path d="M296 176L336 212L296 248"/>
+      <path d="M272 170L240 254"/>
+    </g>
+    <!-- 箱 -->
+    <rect x="166" y="262" width="180" height="104" rx="10" fill="#e0a24a"/>
+    <rect x="156" y="250" width="200" height="26" rx="8" fill="#f7c873"/>
+    <rect x="236" y="296" width="40" height="12" rx="6" fill="#8a5a1f"/>
+  </g>
+  <!-- 窓枠と窓台（真四角） -->
+  <rect x="96" y="96" width="320" height="320" fill="none" stroke="#fff4e6" stroke-width="20" stroke-linejoin="miter"/>
+  <rect x="72" y="408" width="368" height="24" fill="#fff4e6"/>
+</svg>
