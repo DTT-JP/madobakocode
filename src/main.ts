@@ -12,7 +12,7 @@ import './style.css'
 type F = { path: string; dir?: boolean; data?: string | Blob }
 const TEXT = new Set('html htm css js mjs json svg txt md csv tsv xml'.split(' '))
 const CODE_EXT = 'html htm css js mjs wasm json csv tsv txt md xml'.split(' ')
-const VERSION = '2026.10.16.1'
+const VERSION = '2026.10.16.2'
 const ICON = { code: 'description', file: 'insert_drive_file', dir: 'folder' } as const
 const MT: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', avif: 'image/avif', svg: 'image/svg+xml', wasm: 'application/wasm', mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg', m4a: 'audio/mp4', mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime' }
 const SEED = `<!DOCTYPE html>
@@ -63,7 +63,7 @@ const mkdirs = async (p: string): Promise<void> => { const d = parent(p); if (!d
 const kind = (p: string): 'code' | 'file' | 'dir' => { const f = files.get(p); return f?.dir ? 'dir' : typeof f?.data === 'string' ? 'code' : 'file' }
 
 // ---------- state ----------
-let mode: 'edit' | 'pv' = 'edit', cur = '', last = '', previewPath = 'index.html', fs = false, barHidden = false, drawer = false, consoleBeforeFullscreen = false
+let mode: 'edit' | 'pv' = 'edit', cur = '', last = '', previewPath = 'index.html', fs = false, drawer = false, consoleBeforeFullscreen = false
 let open = new Set<string>(), sel = new Set<string>()
 let focus: 'tree' | 'editor' = 'tree'
 let clip: { p: string[]; cut: boolean } | null = null
@@ -79,7 +79,7 @@ ${[['rl', 'refresh', '再読み込み'], ['co', 'terminal', 'コンソール'], 
 <div id="nav-foot"><hr>${B('imp', 'folder_zip', '', 'ZIPを読み込む') + B('exp', 'file_save', '', 'ZIPを書き出す') + B('rst', 'restart_alt', '', 'すべてリセット')}<div id="ver">V ${VERSION}</div></div></nav>
 <aside id="side"><div id="hd">FILES <span id="use"></span></div><div id="tb">${TB('add', 'code', 'コードを追加') + TB('dir', 'create_new_folder', 'フォルダを追加') + TB('up', 'upload_file', 'ファイルを追加') + TB('ren', 'drive_file_rename_outline', '名前を変更')}</div><div id="tree-area"><div id="tree" data-p="" data-d="1"></div><div id="tree-scrollbar"><div id="tree-thumb"></div></div></div></aside>
 <main><div id="filebar"><span id="file-path"></span><span id="file-size"></span></div><div id="empty-guide">ファイルを選んで表示</div><div id="ed"></div><div id="bin"></div><div id="pv"><div id="previewbar"><button data-a="rl" id="pb-rl" title="再読み込み" aria-label="再読み込み"><span class="material-symbols-rounded">refresh</span></button><span class="material-symbols-rounded">route</span><input id="preview-path" value="/index.html" aria-label="プレビューするファイルのパス"><button data-a="pgo" aria-label="このパスをプレビュー"><span class="material-symbols-rounded">arrow_forward</span></button><button data-a="fs" id="pb-fs" title="全画面" aria-label="全画面"><span class="material-symbols-rounded" id="pb-fs-ic">fullscreen</span></button></div><iframe id="ifr" sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-downloads allow-pointer-lock" allow="autoplay; fullscreen; clipboard-write"></iframe>
-<div id="con" hidden><div id="ch">CONSOLE<span id="cc"></span><button data-a="cclr">Clear</button><button data-a="co" aria-label="コンソールを閉じる"><span class="material-symbols-rounded">expand_more</span></button></div><div id="cl"></div><input id="ci" placeholder="> JavaScript" autocapitalize="off" autocorrect="off"></div></div><div id="edge"></div></main>
+<div id="con" hidden><div id="ch">CONSOLE<span id="cc"></span><button data-a="cclr">Clear</button><button data-a="co" aria-label="コンソールを閉じる"><span class="material-symbols-rounded">expand_more</span></button></div><div id="cl"></div><input id="ci" placeholder="> JavaScript" autocapitalize="off" autocorrect="off"></div></div></main>
 <div id="ghost" hidden></div><div id="drop-line" hidden></div>
 <input type="file" id="upl" multiple hidden><input type="file" id="zin" accept=".zip,application/zip" hidden>
 <dialog id="dlg"><form method="dialog"><h2 id="dlg-title"></h2><p id="dlg-message"></p><input id="dlg-input" autocomplete="off"><div class="acts"><button value="cancel" id="dlg-cancel">キャンセル</button><button value="ok" id="dlg-ok">OK</button></div></form></dialog>
@@ -90,7 +90,7 @@ ${[['rl', 'refresh', '再読み込み'], ['co', 'terminal', 'コンソール'], 
 const tree = $('#tree'), ed = $('#ed'), bin = $('#bin'), ifr = $('#ifr') as HTMLIFrameElement, con = $('#con'), cl = $('#cl')
 const filePathEl = $('#file-path'), fileSizeEl = $('#file-size'), previewPathEl = $('#preview-path') as HTMLInputElement
 const emptyGuide = $('#empty-guide'), navScroll = $('#nav-scroll'), navBar = $('#nav-scrollbar'), navThumb = $('#nav-thumb'), treeArea = $('#tree-area'), treeThumb = $('#tree-thumb'), treeBar = $('#tree-scrollbar')
-const ghost = $('#ghost'), dropLine = $('#drop-line'), ccEl = $('#cc'), edge = $('#edge'), pbar = $('#previewbar'), tbar = $('#tb')
+const ghost = $('#ghost'), dropLine = $('#drop-line'), ccEl = $('#cc'), tbar = $('#tb')
 const ci = $('#ci') as HTMLInputElement, upl = $('#upl') as HTMLInputElement, zin = $('#zin') as HTMLInputElement
 const dlg = $('#dlg') as HTMLDialogElement, dlgTitle = $('#dlg-title'), dlgMessage = $('#dlg-message'), dlgInput = $('#dlg-input') as HTMLInputElement
 function dialog(message: string, title = '確認', input = false, value = ''): Promise<string | null> {
@@ -185,7 +185,7 @@ function useSize() {
   $('#use').textContent = (n / 1048576).toFixed(1) + ' MB'
 }
 function render() {
-  document.body.className = (mode === 'pv' ? 'm-pv' : 'm-edit') + (fs ? ' fs' : '') + (fs && barHidden ? ' bar-hide' : '') + (drawer ? ' dr' : '')
+  document.body.className = (mode === 'pv' ? 'm-pv' : 'm-edit') + (fs ? ' fs' : '') + (drawer ? ' dr' : '')
   $('#pb-fs-ic').textContent = fs ? 'fullscreen_exit' : 'fullscreen'
   $('#pb-fs').title = fs ? '全画面を終了' : '全画面'; $('#pb-fs').setAttribute('aria-label', fs ? '全画面を終了' : '全画面')
   document.querySelectorAll('[data-a=pv]').forEach((b) => b.classList.toggle('on', mode === 'pv'))
@@ -435,19 +435,6 @@ async function setMode(m: 'edit' | 'pv') {
   if (m === 'pv') { await navigator.serviceWorker.ready; reload() }
 }
 
-// ---------- 全画面: 上のバーを上へ動かすと隠れ、上端から下へ引くと出る ----------
-function gesture(el: HTMLElement, hide: boolean) {
-  let g: { y: number } | null = null
-  el.addEventListener('pointerdown', (e) => { if (!fs || (e.target as HTMLElement).closest('input,button')) return; g = { y: e.clientY }; el.setPointerCapture(e.pointerId) })
-  el.addEventListener('pointermove', (e) => {
-    if (!g) return
-    const dy = e.clientY - g.y
-    if (hide ? dy < -24 : dy > 24) { g = null; barHidden = hide; render() }
-  })
-  for (const t of ['pointerup', 'pointercancel']) el.addEventListener(t, () => (g = null))
-}
-gesture(pbar, true); gesture(edge, false)
-
 // ---------- コードを追加 ----------
 const cdlg = $('#cdlg') as HTMLDialogElement, cName = $('#c-name') as HTMLInputElement
 function codeDialog(): Promise<{ name: string; seed: boolean } | null> {
@@ -517,7 +504,7 @@ const A: Record<string, () => any> = {
   rl: reload,
   co: () => { con.hidden = !con.hidden; $('[data-a=co]').classList.remove('bad') }, pgo: goPreview,
   cclr: clearConsole,
-  fs: () => { if (!fs) { consoleBeforeFullscreen = !con.hidden; con.hidden = true; barHidden = false } else con.hidden = !consoleBeforeFullscreen; fs = !fs; render() },
+  fs: () => { if (!fs) { consoleBeforeFullscreen = !con.hidden; con.hidden = true } else con.hidden = !consoleBeforeFullscreen; fs = !fs; render() },
   imp: () => zin.click(),
   exp: async () => {
     flush(); const zip = new JSZip()

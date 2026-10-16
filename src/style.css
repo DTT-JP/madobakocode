@@ -1,8 +1,8 @@
 *:where(:not(dialog)){box-sizing:border-box}
 :root{color-scheme:dark;--md-bg:#151a1b;--md-surface:#1e2526;--md-high:#293233;--md-on:#e0e3e3;--md-muted:#aab4b4;--md-primary:#8bd5c7;--md-primary-container:#075047;--md-outline:#3f4a49;--md-error:#ffb4ab}
-html,body{margin:0;height:100%;overflow:hidden;background:var(--md-bg);color:var(--md-on);font:14px "Roboto","Segoe UI",sans-serif;-webkit-tap-highlight-color:transparent;overscroll-behavior:none}
+html,body{margin:0;height:100%;overflow-x:auto;overflow-y:hidden;background:var(--md-bg);color:var(--md-on);font:14px "Roboto","Segoe UI",sans-serif;-webkit-tap-highlight-color:transparent;overscroll-behavior:none}
 [hidden]{display:none!important}
-#app{display:grid;grid-template-columns:190px auto 1fr;height:100%;min-height:0;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
+#app{display:grid;grid-template-columns:190px auto 1fr;height:100%;min-height:0;min-width:880px;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
 nav{background:var(--md-surface);display:grid;grid-template-rows:auto auto minmax(0,1fr) auto;padding:0 4px;overflow:hidden;border-right:1px solid var(--md-outline)}
 nav button{width:182px;height:40px;margin:2px 0;background:none;border:0;border-radius:20px;color:var(--md-muted);font-size:13px;position:relative;cursor:pointer;display:flex;align-items:center;justify-content:flex-start;gap:12px;padding:0 14px;text-align:left}
 nav button:active,nav button.on{background:var(--md-primary-container);color:var(--md-primary)}
@@ -82,14 +82,5 @@ main{min-width:0;min-height:0;position:relative;display:flex;flex-direction:colu
 dialog{border:0;border-radius:28px;background:var(--md-high);color:var(--md-on);padding:24px;min-width:min(360px,calc(100vw - 32px));box-shadow:0 8px 32px #0008}dialog::backdrop{background:#0008}dialog h2{font-size:24px;font-weight:400;margin:0 0 12px}dialog p{color:var(--md-muted);line-height:1.5;margin:0 0 18px;white-space:pre-line}dialog input{width:100%;border:1px solid var(--md-outline);border-radius:4px;background:var(--md-bg);color:var(--md-on);padding:12px;outline:0;margin-bottom:20px}dialog input:focus{border-color:var(--md-primary)}dialog .acts{display:flex;justify-content:flex-end;gap:8px}dialog button{border:0;border-radius:20px;padding:10px 18px;background:var(--md-primary);color:#00201b;font-weight:600;cursor:pointer}dialog #dlg-cancel,dialog #c-cancel{background:transparent;color:var(--md-primary)}
 dialog label{display:flex;align-items:center;margin:0 0 12px;cursor:pointer}dialog input[type=radio]{width:auto;margin:0 10px 0 0;accent-color:var(--md-primary)}
 #c-quick{display:flex;gap:8px;margin:0 0 20px}#c-quick button{flex:1;background:var(--md-primary-container);color:var(--md-primary)}
-.fs #ic{display:none}.fs #app{grid-template-columns:1fr}
-#edge{display:none}
-.fs #previewbar{position:absolute;top:0;left:0;right:0;z-index:6;touch-action:none;transition:transform .22s ease}
-.fs.bar-hide #previewbar{transform:translateY(-100%)}
-.fs.bar-hide #edge{display:block;position:absolute;top:0;left:0;right:0;height:18px;z-index:7;touch-action:none}
-@media(max-width:767px){
-  .m-edit .nw{display:block}
-  aside{position:fixed;left:calc(190px + env(safe-area-inset-left));top:env(safe-area-inset-top);bottom:env(safe-area-inset-bottom);z-index:5;transform:translateX(calc(-100% - 190px - env(safe-area-inset-left)));visibility:hidden;transition:transform .2s,visibility 0s .2s;width:min(280px,80vw)}
-  .dr aside{transform:none;visibility:visible;transition:transform .2s}
-  #app{grid-template-columns:190px 1fr}
-}
+.fs #ic{display:none}.fs #app{grid-template-columns:1fr;min-width:0}
+.m-pv:not(.fs) #pb-rl,.m-pv:not(.fs) #pb-fs{display:none}
