@@ -1,6 +1,21 @@
 // 1) アプリ本体のキャッシュ（PWA）  2) __preview__/* を IndexedDB から配信
-const MIME={html:'text/html',htm:'text/html',css:'text/css',js:'text/javascript',mjs:'text/javascript',json:'application/json',svg:'image/svg+xml',txt:'text/plain',md:'text/markdown',csv:'text/csv',xml:'application/xml',png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',gif:'image/gif',webp:'image/webp',avif:'image/avif',ico:'image/x-icon',mp3:'audio/mpeg',wav:'audio/wav',ogg:'audio/ogg',m4a:'audio/mp4',aac:'audio/aac',mp4:'video/mp4',webm:'video/webm',mov:'video/quicktime',woff:'font/woff',woff2:'font/woff2',ttf:'font/ttf',otf:'font/otf',wasm:'application/wasm'}
-const HOOK='<script>(()=>{const s=(l,a)=>{try{parent.postMessage({__con:[l,a.map(x=>{try{return typeof x==="string"?x:x instanceof Error?(x.stack||String(x)):(JSON.stringify(x)??String(x))}catch(e){return String(x)}}).join(" ")]},"*")}catch(e){}};for(const l of["log","info","warn","error","debug"]){const o=console[l];console[l]=(...a)=>{s(l,a);o.apply(console,a)}}addEventListener("error",e=>s("error",[e.message+" ("+(e.filename||"").split("/").pop()+":"+e.lineno+")"]));addEventListener("unhandledrejection",e=>s("error",["Unhandled: "+((e.reason&&e.reason.stack)||e.reason)]))})()<\/script>'
+const MIME={html:'text/html',htm:'text/html',css:'text/css',js:'text/javascript',mjs:'text/javascript',json:'application/json',svg:'image/svg+xml',txt:'text/plain',md:'text/markdown',csv:'text/csv',tsv:'text/tab-separated-values',xml:'application/xml',png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',gif:'image/gif',webp:'image/webp',avif:'image/avif',ico:'image/x-icon',mp3:'audio/mpeg',wav:'audio/wav',ogg:'audio/ogg',m4a:'audio/mp4',aac:'audio/aac',mp4:'video/mp4',webm:'video/webm',mov:'video/quicktime',woff:'font/woff',woff2:'font/woff2',ttf:'font/ttf',otf:'font/otf',wasm:'application/wasm'}
+const hook=off=>{
+  const PV='/__preview__/'
+  const rel=u=>{try{const x=new URL(u,location.href);const i=x.pathname.indexOf(PV);return i>=0?decodeURIComponent(x.pathname.slice(i+PV.length)):x.host+x.pathname}catch(e){return String(u||'')}}
+  const fmt=x=>{try{return typeof x==='string'?x:x instanceof Error?(x.stack||String(x)):(JSON.stringify(x)??String(x))}catch(e){return String(x)}}
+  const send=(l,t,f,n,c)=>{if(f===rel(location.href)&&n>0)n=Math.max(1,n-off);try{parent.postMessage({__con:{l,t,f,n,c}},'*')}catch(e){}}
+  function __mbc_where(){const st=(new Error().stack||'').split('\n');for(const ln of st){if(ln.indexOf('__mbc_')>=0)continue;const m=/(https?:\/\/[^\s)]+?):(\d+):(\d+)/.exec(ln);if(m&&m[1].indexOf(PV)>=0)return[rel(m[1]),+m[2],+m[3]]}return[rel(location.href),0,0]}
+  for(const l of['log','info','warn','error','debug']){const o=console[l];console[l]=function __mbc_log(...a){const w=__mbc_where();send(l,a.map(fmt).join(' '),w[0],w[1],w[2]);o.apply(console,a)}}
+  addEventListener('error',e=>{
+    const t=e.target
+    if(t&&t!==window&&(t.src||t.href)){send('error','読み込めません: '+rel(t.src||t.href)+' (<'+t.tagName.toLowerCase()+'>)',rel(location.href),0,0);return}
+    send('error',(e.message||'Error'),e.filename?rel(e.filename):rel(location.href),e.lineno||0,e.colno||0)
+  },true)
+  addEventListener('unhandledrejection',e=>{const r=e.reason;const m=r&&r.stack?/(https?:\/\/[^\s)]+?):(\d+):(\d+)/.exec(r.stack):null;send('error','Unhandled: '+((r&&r.stack)||r),m?rel(m[1]):rel(location.href),m?+m[2]:0,m?+m[3]:0)})
+}
+// 注入した改行数(=ユーザーのHTMLの行番号のずれ)をフックへ渡して補正する
+const HOOK=`<script>(${hook})(${(String(hook).match(/\n/g)||[]).length+0})<\/script>`
 let dbp
 const db=()=>dbp||(dbp=new Promise((res,rej)=>{const r=indexedDB.open('madobakocode',1);r.onupgradeneeded=()=>{r.result.createObjectStore('fs',{keyPath:'path'});r.result.createObjectStore('kv')};r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)}))
 const getFile=async p=>{const d=await db();return new Promise(res=>{const r=d.transaction('fs').objectStore('fs').get(p);r.onsuccess=()=>res(r.result);r.onerror=()=>res(null)})}

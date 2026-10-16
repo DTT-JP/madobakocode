@@ -10,8 +10,11 @@ import { deleteCharForward, selectAll } from '@codemirror/commands'
 import './style.css'
 
 type F = { path: string; dir?: boolean; data?: string | Blob }
-const TEXT = new Set('html htm css js mjs json svg txt md csv xml'.split(' '))
-const MT: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', avif: 'image/avif', svg: 'image/svg+xml', mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg', m4a: 'audio/mp4', mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime' }
+const TEXT = new Set('html htm css js mjs json svg txt md csv tsv xml'.split(' '))
+const CODE_EXT = 'html htm css js mjs wasm json csv tsv txt md xml'.split(' ')
+const VERSION = '2026.10.16.1'
+const ICON = { code: 'description', file: 'insert_drive_file', dir: 'folder' } as const
+const MT: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', avif: 'image/avif', svg: 'image/svg+xml', wasm: 'application/wasm', mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg', m4a: 'audio/mp4', mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime' }
 const SEED = `<!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -57,8 +60,10 @@ const uniq = (p: string) => {
 }
 const mkdirs = async (p: string): Promise<void> => { const d = parent(p); if (!d || files.has(d)) return; await mkdirs(d); await put({ path: d, dir: true }) }
 
+const kind = (p: string): 'code' | 'file' | 'dir' => { const f = files.get(p); return f?.dir ? 'dir' : typeof f?.data === 'string' ? 'code' : 'file' }
+
 // ---------- state ----------
-let mode: 'edit' | 'pv' = 'edit', cur = '', last = '', previewPath = 'index.html', fs = false, drawer = false, consoleBeforeFullscreen = false
+let mode: 'edit' | 'pv' = 'edit', cur = '', last = '', previewPath = 'index.html', fs = false, barHidden = false, drawer = false, consoleBeforeFullscreen = false
 let open = new Set<string>(), sel = new Set<string>()
 let focus: 'tree' | 'editor' = 'tree'
 let clip: { p: string[]; cut: boolean } | null = null
@@ -67,18 +72,25 @@ const saveUI = () => req(S('kv', 'readwrite').put({ mode, cur, open: [...open] }
 
 // ---------- DOM ----------
 const B = (a: string, t: string, c = '', l = t) => `<button data-a="${a}" class="${c}" title="${l}" aria-label="${l}"><span class="material-symbols-rounded">${t}</span><span class="nav-label">${l}</span></button>`
+const TB = (a: string, t: string, l: string) => `<button data-a="${a}" title="${l}" aria-label="${l}"><span class="material-symbols-rounded">${t}</span><span class="tl">${l}</span></button>`
 $('#app').innerHTML = `<nav id="ic"><div id="nav-brand"><img src="icon.svg" alt=""><span>MadoBakoCode</span></div><div id="nav-head">${B('pv', 'visibility', '', 'プレビュー') + B('ed', 'edit', '', 'エディター') + B('dr', 'menu', 'nw', 'ファイル')}<hr></div><div id="nav-middle"><div id="nav-scroll">
-${[['add', 'add', 'ファイルを追加'], ['html', 'html', 'HTMLファイルを追加'], ['css', 'css', 'CSSファイルを追加'], ['js', 'javascript', 'JSファイルを追加'], ['dir', 'create_new_folder', 'フォルダを追加'], ['up', 'upload_file', 'ファイルをインポート'], ['ren', 'drive_file_rename_outline', '名前を変更'], ['del', 'delete', '削除'], ['a', 'select_all', 'すべて選択'], ['ua', 'deselect', 'すべて選択解除'], ['x', 'content_cut', '切り取り'], ['c', 'content_copy', 'コピー'], ['v', 'content_paste', '貼り付け']].map(([a, t, l]) => B(a, t, 'eb', l)).join('')}
+${[['del', 'delete', '削除'], ['a', 'select_all', 'すべて選択'], ['ua', 'deselect', 'すべて選択解除'], ['x', 'content_cut', '切り取り'], ['c', 'content_copy', 'コピー'], ['v', 'content_paste', '貼り付け']].map(([a, t, l]) => B(a, t, 'eb', l)).join('')}
 ${[['rl', 'refresh', '再読み込み'], ['co', 'terminal', 'コンソール'], ['fs', 'fullscreen', '全画面']].map(([a, t, l]) => B(a, t, 'pvb', l)).join('')}</div><div id="nav-scrollbar"><div id="nav-thumb"></div></div></div>
-<div id="nav-foot"><hr>${B('imp', 'folder_zip', '', 'ZIPを読み込む') + B('exp', 'file_save', '', 'ZIPを書き出す') + B('rst', 'restart_alt', '', 'すべてリセット')}</div></nav>
-<aside id="side"><div id="hd">FILES <span id="use"></span></div><div id="tree-area"><div id="tree" data-p="" data-d="1"></div><div id="tree-scrollbar"><div id="tree-thumb"></div></div></div></aside>
-<main><div id="filebar"><span id="file-path"></span><span id="file-size"></span></div><div id="empty-guide">ファイルを選んで表示</div><div id="ed"></div><div id="bin"></div><div id="pv"><div id="previewbar"><span class="material-symbols-rounded">route</span><input id="preview-path" value="/index.html" aria-label="プレビューするファイルのパス"><button data-a="pgo" aria-label="このパスをプレビュー"><span class="material-symbols-rounded">arrow_forward</span></button></div><iframe id="ifr" sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-downloads allow-pointer-lock" allow="autoplay; fullscreen; clipboard-write"></iframe>
-<div id="con" hidden><div id="ch">CONSOLE<button data-a="cclr">Clear</button><button data-a="co" aria-label="コンソールを閉じる"><span class="material-symbols-rounded">expand_more</span></button></div><div id="cl"></div><input id="ci" placeholder="> JavaScript" autocapitalize="off" autocorrect="off"></div></div></main>
-<button id="back" data-a="fs" aria-label="全画面を終了"><span class="back-label">全画面終了</span><span class="material-symbols-rounded">close</span></button><input type="file" id="upl" multiple hidden><input type="file" id="zin" accept=".zip,application/zip" hidden>
-<dialog id="dlg"><form method="dialog"><h2 id="dlg-title"></h2><p id="dlg-message"></p><input id="dlg-input" autocomplete="off"><div><button value="cancel" id="dlg-cancel">キャンセル</button><button value="ok" id="dlg-ok">OK</button></div></form></dialog>`
+<div id="nav-foot"><hr>${B('imp', 'folder_zip', '', 'ZIPを読み込む') + B('exp', 'file_save', '', 'ZIPを書き出す') + B('rst', 'restart_alt', '', 'すべてリセット')}<div id="ver">V ${VERSION}</div></div></nav>
+<aside id="side"><div id="hd">FILES <span id="use"></span></div><div id="tb">${TB('add', 'code', 'コードを追加') + TB('dir', 'create_new_folder', 'フォルダを追加') + TB('up', 'upload_file', 'ファイルを追加') + TB('ren', 'drive_file_rename_outline', '名前を変更')}</div><div id="tree-area"><div id="tree" data-p="" data-d="1"></div><div id="tree-scrollbar"><div id="tree-thumb"></div></div></div></aside>
+<main><div id="filebar"><span id="file-path"></span><span id="file-size"></span></div><div id="empty-guide">ファイルを選んで表示</div><div id="ed"></div><div id="bin"></div><div id="pv"><div id="previewbar"><button data-a="rl" id="pb-rl" title="再読み込み" aria-label="再読み込み"><span class="material-symbols-rounded">refresh</span></button><span class="material-symbols-rounded">route</span><input id="preview-path" value="/index.html" aria-label="プレビューするファイルのパス"><button data-a="pgo" aria-label="このパスをプレビュー"><span class="material-symbols-rounded">arrow_forward</span></button><button data-a="fs" id="pb-fs" title="全画面" aria-label="全画面"><span class="material-symbols-rounded" id="pb-fs-ic">fullscreen</span></button></div><iframe id="ifr" sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-downloads allow-pointer-lock" allow="autoplay; fullscreen; clipboard-write"></iframe>
+<div id="con" hidden><div id="ch">CONSOLE<span id="cc"></span><button data-a="cclr">Clear</button><button data-a="co" aria-label="コンソールを閉じる"><span class="material-symbols-rounded">expand_more</span></button></div><div id="cl"></div><input id="ci" placeholder="> JavaScript" autocapitalize="off" autocorrect="off"></div></div><div id="edge"></div></main>
+<div id="ghost" hidden></div><div id="drop-line" hidden></div>
+<input type="file" id="upl" multiple hidden><input type="file" id="zin" accept=".zip,application/zip" hidden>
+<dialog id="dlg"><form method="dialog"><h2 id="dlg-title"></h2><p id="dlg-message"></p><input id="dlg-input" autocomplete="off"><div class="acts"><button value="cancel" id="dlg-cancel">キャンセル</button><button value="ok" id="dlg-ok">OK</button></div></form></dialog>
+<dialog id="cdlg"><form method="dialog" id="cform"><h2>コードを追加</h2>
+<div id="c-main"><p>ファイル名を入力するか、下のボタンで作成します<br>使える拡張子: ${CODE_EXT.join(' ')}</p><input id="c-name" placeholder="例: a.txt / sub/b.js" autocomplete="off" autocapitalize="off" autocorrect="off"><div id="c-quick"><button type="button" data-q="html">HTML</button><button type="button" data-q="css">CSS</button><button type="button" data-q="js">JS</button></div></div>
+<div id="c-html" hidden><p>HTMLの中身を選んでください</p><label><input type="radio" name="hs" value="empty" checked>空っぽ</label><label><input type="radio" name="hs" value="seed">最初のページを入れる</label></div>
+<div class="acts"><button type="button" id="c-cancel">キャンセル</button><button type="submit" id="c-ok">作成</button></div></form></dialog>`
 const tree = $('#tree'), ed = $('#ed'), bin = $('#bin'), ifr = $('#ifr') as HTMLIFrameElement, con = $('#con'), cl = $('#cl')
 const filePathEl = $('#file-path'), fileSizeEl = $('#file-size'), previewPathEl = $('#preview-path') as HTMLInputElement
 const emptyGuide = $('#empty-guide'), navScroll = $('#nav-scroll'), navBar = $('#nav-scrollbar'), navThumb = $('#nav-thumb'), treeArea = $('#tree-area'), treeThumb = $('#tree-thumb'), treeBar = $('#tree-scrollbar')
+const ghost = $('#ghost'), dropLine = $('#drop-line'), ccEl = $('#cc'), edge = $('#edge'), pbar = $('#previewbar'), tbar = $('#tb')
 const ci = $('#ci') as HTMLInputElement, upl = $('#upl') as HTMLInputElement, zin = $('#zin') as HTMLInputElement
 const dlg = $('#dlg') as HTMLDialogElement, dlgTitle = $('#dlg-title'), dlgMessage = $('#dlg-message'), dlgInput = $('#dlg-input') as HTMLInputElement
 function dialog(message: string, title = '確認', input = false, value = ''): Promise<string | null> {
@@ -149,7 +161,7 @@ let treeDrag = { y: 0, top: 0 }
 treeThumb.addEventListener('pointerdown', (e) => { treeDrag = { y: e.clientY, top: tree.scrollTop }; treeThumb.setPointerCapture(e.pointerId) })
 treeThumb.addEventListener('pointermove', (e) => { if (treeThumb.hasPointerCapture(e.pointerId)) tree.scrollTop = treeDrag.top + (e.clientY - treeDrag.y) * (tree.scrollHeight - tree.clientHeight) / Math.max(1, treeBar.clientHeight - treeThumb.clientHeight) })
 treeThumb.addEventListener('pointerup', (e) => treeThumb.releasePointerCapture(e.pointerId))
-addEventListener('resize', () => { updateNavScrollbar(); updateTreeScrollbar() })
+addEventListener('resize', () => { updateNavScrollbar(); updateTreeScrollbar(); fitToolbar() })
 function select(p: string) { flush(); cur = p; loadView(); saveUI() }
 
 // ---------- tree ----------
@@ -162,7 +174,8 @@ const sorted = (d: string) => [...files.values()].filter((f) => parent(f.path) =
 })
 function rows(d: string, depth: number, out: string[]) {
   for (const f of sorted(d)) {
-    out.push(`<div class="row${f.path === cur ? ' cur' : ''}${sel.has(f.path) ? ' sel' : ''}" data-p="${esc(f.path)}" data-d="${f.dir ? 1 : 0}" style="padding-left:${6 + depth * 14}px"><span class="h material-symbols-rounded">drag_indicator</span>${sel.size ? `<input type="checkbox" ${sel.has(f.path) ? 'checked' : ''}>` : ''}<span>${f.dir ? `<span class="material-symbols-rounded fold">${open.has(f.path) ? 'keyboard_arrow_down' : 'chevron_right'}</span>` : ''}${esc(base(f.path))}</span></div>`)
+    const k = kind(f.path), on = f.path === cur || sel.has(f.path)
+    out.push(`<div class="row${on ? ' cur' : ''}${sel.has(f.path) ? ' sel' : ''}" data-p="${esc(f.path)}" data-d="${f.dir ? 1 : 0}" style="padding-left:${8 + depth * 14}px">${sel.size ? `<input type="checkbox" ${sel.has(f.path) ? 'checked' : ''}>` : ''}<span class="ico material-symbols-rounded">${ICON[k]}</span><span class="nm">${esc(base(f.path))}</span>${f.dir ? `<span class="fold material-symbols-rounded">${open.has(f.path) ? 'expand_more' : 'chevron_right'}</span>` : ''}</div>`)
     if (f.dir && open.has(f.path)) rows(f.path, depth + 1, out)
   }
 }
@@ -172,52 +185,116 @@ function useSize() {
   $('#use').textContent = (n / 1048576).toFixed(1) + ' MB'
 }
 function render() {
-  document.body.className = (mode === 'pv' ? 'm-pv' : 'm-edit') + (fs ? ' fs' : '') + (drawer ? ' dr' : '')
+  document.body.className = (mode === 'pv' ? 'm-pv' : 'm-edit') + (fs ? ' fs' : '') + (fs && barHidden ? ' bar-hide' : '') + (drawer ? ' dr' : '')
+  $('#pb-fs-ic').textContent = fs ? 'fullscreen_exit' : 'fullscreen'
+  $('#pb-fs').title = fs ? '全画面を終了' : '全画面'; $('#pb-fs').setAttribute('aria-label', fs ? '全画面を終了' : '全画面')
   document.querySelectorAll('[data-a=pv]').forEach((b) => b.classList.toggle('on', mode === 'pv'))
   document.querySelectorAll('[data-a=ed]').forEach((b) => b.classList.toggle('on', mode === 'edit'))
-  renderTree()
+  renderTree(); fitToolbar()
+}
+// ファイル一覧のツールバー下端を、左アイコン列の区切り線(hr)の位置に合わせる
+function fitToolbar() {
+  const hr = document.querySelector('#nav-head hr') as HTMLElement
+  const h = hr.getBoundingClientRect().bottom - $('#hd').getBoundingClientRect().bottom
+  if (h > 0) tbar.style.height = h + 'px'
 }
 const toggle = (p: string) => { sel.has(p) ? sel.delete(p) : sel.add(p); renderTree() }
 
 let dr: any = null, lp: any = 0, skip = false
+const dragLabel = (ps: string[]) => `<span class="material-symbols-rounded">${ICON[kind(ps[0])]}</span><span>${esc(base(ps[0]))}${ps.length > 1 ? ` 他${ps.length - 1}個` : ''}</span>`
+function dropTarget(x: number, y: number) {
+  const el = document.elementFromPoint(x, y) as HTMLElement | null
+  if (!el || !treeArea.contains(el) || el.closest('#tree-scrollbar')) return null
+  const r = el.closest('.row') as HTMLElement | null
+  const dir = r ? (r.dataset.d === '1' ? r.dataset.p! : parent(r.dataset.p!)) : ''
+  return { dir, ok: (dr.ps as string[]).every((p) => dir !== p && !dir.startsWith(p + '/')) }
+}
+// 移動先フォルダ(=中身の範囲)を線で囲む。ルートはファイル一覧全体
+function showDropLine(t: { dir: string; ok: boolean } | null) {
+  if (!t) { dropLine.hidden = true; return }
+  const area = treeArea.getBoundingClientRect(), all = [...tree.querySelectorAll('.row')] as HTMLElement[]
+  let top = area.top, bottom = area.bottom
+  if (t.dir) {
+    const head = all.find((r) => r.dataset.p === t.dir)!, kids = all.filter((r) => r.dataset.p!.startsWith(t.dir + '/'))
+    top = head.getBoundingClientRect().top; bottom = (kids.length ? kids[kids.length - 1] : head).getBoundingClientRect().bottom
+  }
+  top = Math.max(top, area.top); bottom = Math.min(bottom, area.bottom)
+  Object.assign(dropLine.style, { left: area.left + 1 + 'px', top: top + 'px', width: area.width - 2 + 'px', height: Math.max(0, bottom - top) + 'px' })
+  dropLine.className = t.ok ? '' : 'ng'; dropLine.hidden = false
+}
+function updateDrag() {
+  ghost.style.transform = `translate(${dr.cx + 14}px,${dr.cy + 14}px)`
+  dr.target = dropTarget(dr.cx, dr.cy); showDropLine(dr.target)
+}
+function autoScroll() {
+  if (!dr?.on) return
+  const a = tree.getBoundingClientRect()
+  if (dr.cy < a.top + 40) tree.scrollTop -= 10; else if (dr.cy > a.bottom - 40) tree.scrollTop += 10
+  updateDrag(); dr.raf = requestAnimationFrame(autoScroll)
+}
+function endDrag() {
+  if (dr?.raf) cancelAnimationFrame(dr.raf)
+  ghost.hidden = true; dropLine.hidden = true
+  document.body.classList.remove('drag')
+  document.querySelectorAll('.lift,.grab').forEach((x) => x.classList.remove('lift', 'grab'))
+}
+async function moveInto(ps: string[], dir: string) {
+  flush(); const bad: string[] = []
+  for (const p of ps) {
+    const n = join(dir, base(p))
+    if (n === p) continue
+    if (files.has(n)) { bad.push(base(p)); continue }
+    await mv(p, n)
+  }
+  if (dir) open.add(dir)
+  sel.clear(); saveUI(); render(); updateFilebar()
+  if (bad.length) dialog('同名のものがあるため移動できませんでした\n' + bad.map((b) => `「${b}」`).join('\n'), '移動できません')
+}
 tree.addEventListener('pointerdown', (e) => {
   focus = 'tree'; skip = false
+  if (e.button > 0) return
+  const t = e.target as HTMLElement, r = t.closest('.row') as HTMLElement
+  if (!r || t.closest('.fold')) return
+  const touch = e.pointerType === 'touch'
+  dr = { p: r.dataset.p!, x: e.clientX, y: e.clientY, cx: e.clientX, cy: e.clientY, on: false, long: false, touch }
+  lp = setTimeout(() => { if (dr && !dr.on) { dr.long = true; r.classList.add('grab') } }, touch ? 350 : 500)
+})
+// タッチは長押し後だけドラッグ(それ以外はスクロール)。ドラッグ中はスクロールを止める
+tree.addEventListener('touchmove', (e) => { if (dr && (dr.long || dr.on)) e.preventDefault() }, { passive: false })
+tree.addEventListener('contextmenu', (e) => e.preventDefault())
+addEventListener('pointermove', (e) => {
+  if (!dr) return
+  dr.cx = e.clientX; dr.cy = e.clientY
+  if (!dr.on) {
+    if (Math.hypot(e.clientX - dr.x, e.clientY - dr.y) <= 8) return
+    if (dr.touch && !dr.long) { clearTimeout(lp); dr = null; return }
+    clearTimeout(lp); dr.on = true
+    dr.ps = sel.has(dr.p) ? top([...sel]) : [dr.p]
+    ghost.innerHTML = dragLabel(dr.ps); ghost.hidden = false
+    document.body.classList.add('drag')
+    document.querySelectorAll('.grab').forEach((x) => x.classList.remove('grab'))
+    for (const r of tree.querySelectorAll('.row') as any) if (dr.ps.includes(r.dataset.p)) r.classList.add('lift')
+    dr.raf = requestAnimationFrame(autoScroll)
+  }
+  updateDrag()
+})
+addEventListener('pointerup', async () => {
+  clearTimeout(lp)
+  const d = dr; dr = null
+  if (!d) return
+  if (d.on) { skip = true; endDrag(); if (d.target?.ok) await moveInto(d.ps, d.target.dir) }
+  else if (d.long) { skip = true; endDrag(); toggle(d.p) }
+})
+addEventListener('pointercancel', () => { clearTimeout(lp); if (dr?.on) endDrag(); dr = null })
+tree.addEventListener('click', (e) => {
+  if (skip) { skip = false; return }
   const t = e.target as HTMLElement, r = t.closest('.row') as HTMLElement
   if (!r) return
   const p = r.dataset.p!
-  dr = { p, x: e.clientX, y: e.clientY, on: false, ok: e.pointerType !== 'touch' || !!t.closest('.h') }
-  lp = setTimeout(() => { if (dr && !dr.on) { skip = true; toggle(p) } }, 500)
-})
-addEventListener('pointermove', (e) => {
-  if (!dr || !dr.ok) return
-  if (!dr.on && Math.hypot(e.clientX - dr.x, e.clientY - dr.y) > 8) { dr.on = true; clearTimeout(lp); document.body.classList.add('drag') }
-  if (dr.on) {
-    document.querySelectorAll('.over').forEach((x) => x.classList.remove('over'))
-    ;(document.elementFromPoint(e.clientX, e.clientY) as HTMLElement)?.closest('.row[data-d="1"]')?.classList.add('over')
-  }
-})
-addEventListener('pointerup', (e) => {
-  clearTimeout(lp)
-  if (dr?.on) {
-    skip = true
-    const t = (document.elementFromPoint(e.clientX, e.clientY) as HTMLElement)?.closest('[data-d="1"]') as HTMLElement
-    if (t) {
-      const d = t.dataset.p!, ps = sel.has(dr.p) ? top([...sel]) : [dr.p]
-      flush(); open.add(d)
-      ;(async () => { for (const p of ps) await mv(p, join(d, base(p))); sel.clear(); saveUI(); render() })()
-    }
-  }
-  document.body.classList.remove('drag'); dr = null
-})
-addEventListener('pointercancel', () => { clearTimeout(lp); dr = null; document.body.classList.remove('drag') })
-tree.addEventListener('click', (e) => {
-  if (skip) { skip = false; return }
-  const r = (e.target as HTMLElement).closest('.row') as HTMLElement
-  if (!r) return
-  const p = r.dataset.p!
   last = p
+  if (t.closest('.fold')) { open.has(p) ? open.delete(p) : open.add(p); saveUI(); renderTree(); return }
   if (sel.size || e.ctrlKey || e.metaKey || e.shiftKey) return toggle(p)
-  if (r.dataset.d === '1') { open.has(p) ? open.delete(p) : open.add(p); saveUI(); renderTree() }
+  if (r.dataset.d === '1') { select(p); renderTree() }
   else { select(p); drawer = false; render() }
 })
 
@@ -234,17 +311,33 @@ async function cp(s: string, d: string) {
   for (const k of under(s)) await put({ ...files.get(k)!, path: t + k.slice(s.length) })
 }
 const targets = () => (sel.size ? [...sel] : cur ? [cur] : [])
-const destDir = () => { const t = [...sel][0] ?? last; if (!t) return ''; return files.get(t)?.dir ? t : parent(t) }
+const destDir = () => { const t = [...sel][0] ?? (last || cur); if (!t) return ''; return files.get(t)?.dir ? t : parent(t) }
 async function make(path: string, data = '') {
   if (files.has(path)) return dialog('同名のファイルがあります', '追加できません')
-  if (!isText(path)) return dialog('テキスト系の拡張子のみ作成できます。画像等はアップロードしてください', '追加できません')
-  flush(); await mkdirs(path); await put({ path, data })
+  if (!CODE_EXT.includes(ext(path))) return dialog(`使える拡張子は次のとおりです\n${CODE_EXT.join(' ')}`, '追加できません')
+  flush(); await mkdirs(path); await put({ path, data: ext(path) === 'wasm' ? new Blob([], { type: 'application/wasm' }) : data })
   const d = parent(path); if (d) open.add(d)
   select(path); render()
 }
+const countKinds = (c: { code: number; file: number; dir: number }) => [c.code && `コード${c.code}個`, c.file && `ファイル${c.file}個`, c.dir && `フォルダ${c.dir}個`].filter(Boolean).join('、')
+function deleteMessage(ts: string[]) {
+  const g = { code: [] as string[], file: [] as string[], dir: [] as string[] }, inner = { code: 0, file: 0, dir: 0 }
+  for (const t of ts) {
+    g[kind(t)].push(base(t))
+    if (files.get(t)?.dir) for (const k of under(t)) if (k !== t) inner[kind(k)]++
+  }
+  const total = inner.code + inner.file + inner.dir
+  if (ts.length === 1) {
+    const n = base(ts[0]), k = kind(ts[0])
+    if (k === 'dir') return total ? `フォルダ「${n}」とその中身 ${total}個を削除していいですか？\n内訳: ${countKinds(inner)}` : `フォルダ「${n}」を削除していいですか？`
+    return `${k === 'code' ? 'コード' : 'ファイル'}「${n}」を削除していいですか？`
+  }
+  const part = (n: string[], one: string, many: string) => n.length === 0 ? '' : n.length === 1 ? `${one}「${n[0]}」` : `「${n[0]}」他${n.length - 1}個の${many}`
+  return [part(g.code, 'コード', 'コードファイル'), part(g.file, 'ファイル', 'ファイル'), part(g.dir, 'フォルダ', 'フォルダ'), total ? `フォルダの中身: ${countKinds(inner)}` : '', '上記を削除していいですか？'].filter(Boolean).join('\n')
+}
 async function removeTargets() {
   const ts = top(targets())
-  if (!ts.length || !(await ask(`${ts.length} 件を削除します。よろしいですか？`, '削除の確認'))) return
+  if (!ts.length || !(await ask(deleteMessage(ts), '削除の確認'))) return
   for (const t of ts) for (const k of under(t)) { if (k === cur) { cur = ''; dirty = false }; await drop(k) }
   sel.clear(); loadView(); saveUI(); render()
 }
@@ -263,7 +356,10 @@ function kb(k: string) {
     if (k === 'a') selectAll(view)
     else if (k === 'c') navigator.clipboard.writeText(txt)
     else if (k === 'x') { navigator.clipboard.writeText(txt); view.dispatch(view.state.replaceSelection('')) }
-    else if (k === 'del') deleteCharForward(view)
+    else if (k === 'del') {
+      if (s.empty) deleteCharForward(view)
+      else ask(`コード「${base(cur)}」の中の${s.from === 0 && s.to === view.state.doc.length ? '全て' : '一部'}のテキストを削除していいですか？`, '削除の確認').then((ok) => { if (ok) { view.dispatch(view.state.replaceSelection('')); view.focus() } })
+    }
     else navigator.clipboard.readText().then((x) => view.dispatch(view.state.replaceSelection(x)), () => dialog('クリップボードの読み取りが許可されませんでした', '貼り付けできません'))
     return
   }
@@ -285,14 +381,46 @@ const normalizedPreviewPath = () => {
   return parts.join('/') || 'index.html'
 }
 const previewUrl = () => new URL('__preview__/' + normalizedPreviewPath().split('/').map(encodeURIComponent).join('/'), document.baseURI).href + '?t=' + Date.now()
-function reload() { flush(); previewPath = normalizedPreviewPath(); previewPathEl.value = '/' + previewPath; cl.innerHTML = ''; ifr.src = previewUrl() }
+function reload() { flush(); previewPath = normalizedPreviewPath(); previewPathEl.value = '/' + previewPath; clearConsole(); ifr.src = previewUrl() }
 function goPreview() { previewPath = normalizedPreviewPath(); reload() }
-function line(l: string, t: string) {
-  const d = document.createElement('div'); d.className = 'l ' + l; d.textContent = t; cl.append(d); cl.scrollTop = 1e9
+// 同じ内容(レベル・文面・ファイル・行)が連続したら1行にまとめて回数を出す
+let lastLine: { key: string; el: HTMLElement; n: number } | null = null, errN = 0, warnN = 0
+function summary() { ccEl.textContent = (errN ? ` エラー ${errN}` : '') + (warnN ? ` 警告 ${warnN}` : '') }
+function clearConsole() { cl.innerHTML = ''; lastLine = null; errN = 0; warnN = 0; summary() }
+function line(l: string, t: string, f = '', n = 0, c = 0) {
+  if (l === 'error') errN++; else if (l === 'warn') warnN++
+  summary()
+  const key = [l, t, f, n, c].join('\0')
+  if (lastLine?.key === key) {
+    lastLine.n++
+    const b = lastLine.el.querySelector('.lc') as HTMLElement
+    b.textContent = String(lastLine.n); b.hidden = false
+  } else {
+    const d = document.createElement('div'); d.className = 'l ' + l
+    const b = document.createElement('span'); b.className = 'lc'; b.hidden = true; b.textContent = '1'
+    const m = document.createElement('span'); m.className = 'lm'; m.textContent = t
+    d.append(b, m)
+    if (f) {
+      const a = document.createElement('a'); a.className = 'ls'; a.textContent = n ? `${f}:${n}` : f; a.title = a.textContent
+      if (files.has(f)) { a.dataset.f = f; a.dataset.n = String(n) } else a.classList.add('ext')
+      d.append(a)
+    }
+    cl.append(d); lastLine = { key, el: d, n: 1 }
+  }
+  cl.scrollTop = 1e9
   if (l === 'error' && con.hidden) $('[data-a=co]').classList.add('bad')
 }
+async function jump(f: string, n: number) {
+  await setMode('edit'); select(f); render()
+  if (n > 0 && typeof files.get(f)?.data === 'string') {
+    const pos = view.state.doc.line(Math.min(n, view.state.doc.lines)).from
+    view.dispatch({ selection: { anchor: pos }, effects: EditorView.scrollIntoView(pos, { y: 'center' }) }); view.focus()
+  }
+}
+cl.addEventListener('click', (e) => { const a = (e.target as HTMLElement).closest('.ls[data-f]') as HTMLElement; if (a) jump(a.dataset.f!, +a.dataset.n!) })
 addEventListener('message', (e) => {
-  if (e.source === ifr.contentWindow && e.data?.__con) line(e.data.__con[0], e.data.__con[1])
+  const m = e.data?.__con
+  if (e.source === ifr.contentWindow && m) line(m.l, m.t, m.f, m.n, m.c)
 })
 ci.addEventListener('keydown', (e) => {
   if (e.key !== 'Enter' || !ci.value.trim()) return
@@ -305,6 +433,43 @@ async function setMode(m: 'edit' | 'pv') {
   if (m === 'pv' && !navigator.serviceWorker) { dialog('この環境ではプレビューできません', 'プレビューできません'); return }
   mode = m; fs = false; saveUI(); render()
   if (m === 'pv') { await navigator.serviceWorker.ready; reload() }
+}
+
+// ---------- 全画面: 上のバーを上へ動かすと隠れ、上端から下へ引くと出る ----------
+function gesture(el: HTMLElement, hide: boolean) {
+  let g: { y: number } | null = null
+  el.addEventListener('pointerdown', (e) => { if (!fs || (e.target as HTMLElement).closest('input,button')) return; g = { y: e.clientY }; el.setPointerCapture(e.pointerId) })
+  el.addEventListener('pointermove', (e) => {
+    if (!g) return
+    const dy = e.clientY - g.y
+    if (hide ? dy < -24 : dy > 24) { g = null; barHidden = hide; render() }
+  })
+  for (const t of ['pointerup', 'pointercancel']) el.addEventListener(t, () => (g = null))
+}
+gesture(pbar, true); gesture(edge, false)
+
+// ---------- コードを追加 ----------
+const cdlg = $('#cdlg') as HTMLDialogElement, cName = $('#c-name') as HTMLInputElement
+function codeDialog(): Promise<{ name: string; seed: boolean } | null> {
+  const dest = destDir(); let res: { name: string; seed: boolean } | null = null, step: 'main' | 'html' = 'main'
+  const view_ = (st: 'main' | 'html') => { step = st; $('#c-main').hidden = st !== 'main'; $('#c-html').hidden = st !== 'html' }
+  view_('main'); cName.value = ''; (cdlg.querySelector('input[value=empty]') as HTMLInputElement).checked = true
+  cdlg.showModal(); setTimeout(() => cName.focus(), 0)
+  const finish = (r: typeof res) => { res = r; cdlg.close() }
+  const onClick = (e: Event) => {
+    const t = e.target as HTMLElement, q = t.closest('[data-q]') as HTMLElement
+    if (q) {
+      if (q.dataset.q === 'html') view_('html')
+      else finish({ name: uniq(join(dest, q.dataset.q === 'css' ? 'main.css' : 'script.js')), seed: false })
+    } else if (t.closest('#c-cancel')) finish(null)
+  }
+  const onSubmit = (e: Event) => {
+    e.preventDefault()
+    if (step === 'html') finish({ name: uniq(join(dest, 'index.html')), seed: (cdlg.querySelector('input[name=hs]:checked') as HTMLInputElement).value === 'seed' })
+    else if (cName.value.trim()) finish({ name: join(dest, cName.value.trim().replace(/^\/+/, '')), seed: false })
+  }
+  cdlg.addEventListener('click', onClick); $('#cform').addEventListener('submit', onSubmit)
+  return new Promise((resolve) => cdlg.addEventListener('close', () => { cdlg.removeEventListener('click', onClick); $('#cform').removeEventListener('submit', onSubmit); resolve(res) }, { once: true }))
 }
 
 // ---------- export / import ----------
@@ -340,9 +505,7 @@ upl.addEventListener('change', async () => {
 // ---------- actions ----------
 const A: Record<string, () => any> = {
   pv: () => setMode('pv'), ed: () => setMode('edit'), dr: () => { drawer = !drawer; render() },
-  add: async () => { const n = await promptInApp('ファイル名（例: a.txt / sub/b.js）', '', 'ファイルを追加'); if (n?.trim()) return make(join(destDir(), n.trim())) },
-  html: () => make(uniq('index.html'), SEED),
-  js: () => make(uniq('script.js')), css: () => make(uniq('main.css')),
+  add: async () => { const r = await codeDialog(); if (r) return make(r.name, r.seed ? SEED : '') },
   dir: async () => { const n = await promptInApp('フォルダ名', '', 'フォルダを追加'); if (!n?.trim()) return; const p = join(destDir(), n.trim().replace(/^\/|\/$/g, '')); if (files.has(p)) return dialog('同名のフォルダがあります', '追加できません'); await mkdirs(p + '/x'); await put({ path: p, dir: true }); open.add(p); saveUI(); render() },
   up: () => upl.click(),
   ren: async () => {
@@ -353,8 +516,8 @@ const A: Record<string, () => any> = {
   del: () => kb('del'), a: () => kb('a'), ua: () => { sel.clear(); renderTree() }, x: () => kb('x'), c: () => kb('c'), v: () => kb('v'),
   rl: reload,
   co: () => { con.hidden = !con.hidden; $('[data-a=co]').classList.remove('bad') }, pgo: goPreview,
-  cclr: () => { cl.innerHTML = '' },
-  fs: () => { if (!fs) { consoleBeforeFullscreen = !con.hidden; con.hidden = true } else con.hidden = !consoleBeforeFullscreen; fs = !fs; render() },
+  cclr: clearConsole,
+  fs: () => { if (!fs) { consoleBeforeFullscreen = !con.hidden; con.hidden = true; barHidden = false } else con.hidden = !consoleBeforeFullscreen; fs = !fs; render() },
   imp: () => zin.click(),
   exp: async () => {
     flush(); const zip = new JSZip()
@@ -367,13 +530,19 @@ const A: Record<string, () => any> = {
     cur = ''; last = ''; open.clear(); sel.clear(); dirty = false; loadView(); saveUI(); render()
   },
 }
+// エディター内の Delete: 選択範囲があるときは CodeMirror より先に横取りして確認する(無選択の1文字削除は CodeMirror に任せる)
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Delete' || e.ctrlKey || e.metaKey || dlg.open || !(e.target as HTMLElement).closest?.('.cm-editor')) return
+  if (view.state.selection.main.empty) return
+  e.preventDefault(); e.stopPropagation(); focus = 'editor'; kb('del')
+}, true)
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && dlg.open) return
   if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
   const key = e.key.toLowerCase()
   if (e.ctrlKey || e.metaKey) {
     if (['a', 'c', 'x', 'v'].includes(key)) { e.preventDefault(); kb(key) }
-  } else if (e.key === 'Delete') { e.preventDefault(); kb('del') }
+  } else if (e.key === 'Delete') { if ((e.target as HTMLElement).closest?.('.cm-editor')) return; e.preventDefault(); kb('del') }
 })
 document.addEventListener('pointerdown', (e) => { if ((e.target as HTMLElement).closest('[data-a]')) e.preventDefault() })
 document.addEventListener('click', (e) => { const b = (e.target as HTMLElement).closest('[data-a]') as HTMLElement; if (b) A[b.dataset.a!]?.() })
