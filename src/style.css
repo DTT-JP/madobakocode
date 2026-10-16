@@ -2,7 +2,7 @@
 :root{color-scheme:dark;--md-bg:#151a1b;--md-surface:#1e2526;--md-high:#293233;--md-on:#e0e3e3;--md-muted:#aab4b4;--md-primary:#8bd5c7;--md-primary-container:#075047;--md-outline:#3f4a49;--md-error:#ffb4ab}
 html,body{margin:0;height:100%;overflow-x:auto;overflow-y:hidden;background:var(--md-bg);color:var(--md-on);font:14px "Roboto","Segoe UI",sans-serif;-webkit-tap-highlight-color:transparent;overscroll-behavior:none}
 [hidden]{display:none!important}
-#app{display:grid;grid-template-columns:190px auto 1fr;height:100%;min-height:0;min-width:880px;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
+#app{display:grid;grid-template-columns:var(--navw,190px) auto 1fr;height:100%;min-height:0;min-width:880px;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
 nav{background:var(--md-surface);display:grid;grid-template-rows:auto auto minmax(0,1fr) auto;padding:0 4px;overflow:hidden;border-right:1px solid var(--md-outline)}
 nav button{width:182px;height:40px;margin:2px 0;background:none;border:0;border-radius:20px;color:var(--md-muted);font-size:13px;position:relative;cursor:pointer;display:flex;align-items:center;justify-content:flex-start;gap:12px;padding:0 14px;text-align:left}
 nav button:active,nav button.on{background:var(--md-primary-container);color:var(--md-primary)}
@@ -28,7 +28,7 @@ nav button.bad::after{content:"";position:absolute;top:6px;right:6px;width:8px;h
 .nav-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1}
 .nw{display:none}
 .m-pv .eb,.m-pv aside,.m-pv #ed,.m-pv #bin,.m-pv #filebar,.m-pv #empty-guide{display:none}
-.m-pv #app{grid-template-columns:190px 1fr}
+.m-pv #app{grid-template-columns:var(--navw,190px) 1fr}
 .m-edit .pvb,.m-edit #pv{display:none}
 aside{width:250px;background:var(--md-surface);border-right:1px solid var(--md-outline);display:flex;flex-direction:column;min-height:0}
 #hd{flex:0 0 auto;height:42px;min-height:42px;padding:14px 16px 10px;font-size:11px;color:var(--md-muted);letter-spacing:.08em;border-bottom:1px solid var(--md-outline)}
@@ -84,3 +84,83 @@ dialog label{display:flex;align-items:center;margin:0 0 12px;cursor:pointer}dial
 #c-quick{display:flex;gap:8px;margin:0 0 20px}#c-quick button{flex:1;background:var(--md-primary-container);color:var(--md-primary)}
 .fs #ic{display:none}.fs #app{grid-template-columns:1fr;min-width:0}
 .m-pv:not(.fs) #pb-rl,.m-pv:not(.fs) #pb-fs{display:none}
+/* ================= モバイル最適化 =================
+   縦長(portrait)の画面だけ対象。判定条件は main.ts の MQ_PHONE / MQ_TABLET と揃える */
+.mo,.ver-m{display:none}
+@media (orientation:portrait){
+  html,body{overflow:hidden}
+  #app{min-width:0;height:100%;height:100dvh}
+}
+
+/* ---- タブレット縦向き / 横向きで狭いとき(横スクロールが出る手前): 左の文字を隠して省スペース。ロゴで切り替え ---- */
+@media (orientation:portrait) and (min-width:600px), (orientation:landscape) and (max-width:879px){
+  :root{--navw:56px}
+  body.nopen{--navw:190px}
+  #nav-brand{cursor:pointer}
+  #nav-brand:hover{background:var(--md-high)}
+  body:not(.nopen) #nav-brand{width:48px;padding:0;justify-content:center}
+  body:not(.nopen) #nav-brand span,body:not(.nopen) .nav-label,body:not(.nopen) #ver{display:none}
+  body:not(.nopen) nav button{width:48px;padding:0;gap:0;justify-content:center}
+}
+@media (orientation:portrait) and (min-width:600px){
+  aside{width:clamp(180px,32vw,250px)}
+}
+/* 横向きで短くしたぶん、横スクロールが始まる幅も狭める(文字を開いたときは従来どおり) */
+@media (orientation:landscape) and (max-width:879px){
+  #app{min-width:746px}
+  body.nopen:not(.fs) #app{min-width:880px}
+}
+
+/* ---- スマホ(縦長・幅600px未満): 上バー / 本体 / 操作ボタン列 / 下の切り替え ---- */
+@media (orientation:portrait) and (max-width:599px){
+  /* 行: 1 上バー / 2 ファイルパス(エディター) / 3 本体 / 4 コンソール / 5 プレビューのパス / 6 操作ボタン列 / 7 下の切り替え */
+  #app{grid-template-rows:auto auto minmax(0,1fr) auto auto auto auto}
+  body:not(.fs) #app{grid-template-columns:1fr 44px 44px 44px} /* .m-pv #app より強く、全画面(.fs)の1列には負ける */
+  #app::before{content:"";grid-row:1;grid-column:1/-1;background:var(--md-surface);border-bottom:1px solid var(--md-outline)}
+  .fs #app::before{display:none}
+  #ic,main,body.m-pv #pv{display:contents}
+  #ic .nav-label{display:none}
+
+  /* 上バー: ロゴ(左) + 小さくバージョン、右にアイコンだけ3つ */
+  #nav-brand{grid-row:1;grid-column:1;width:auto;min-width:0;height:44px;min-height:44px;padding:0 8px 0 12px}
+  #nav-brand::after{display:none}
+  #nav-brand span{flex:0 1 auto;min-width:0}
+  #nav-brand .ver-m{display:block;flex:0 0 auto;font-size:9px;font-weight:400;line-height:1;color:var(--md-muted);opacity:.7;letter-spacing:.04em;white-space:nowrap}
+  #nav-foot{display:contents}
+  #nav-foot hr,#ver{display:none}
+  #nav-foot button{grid-row:1;width:44px;height:44px;margin:0;padding:0;border-radius:0;justify-content:center}
+  #nav-foot [data-a=imp]{grid-column:2}#nav-foot [data-a=exp]{grid-column:3}#nav-foot [data-a=rst]{grid-column:4}
+
+  /* 本体 */
+  #filebar{grid-row:2;grid-column:1/-1}
+  #ed,#bin,#empty-guide{grid-row:3;grid-column:1/-1;min-height:0}
+  #ed{overflow:hidden}
+  aside{grid-row:2/4;grid-column:1/-1;width:auto;border-right:0}
+  .m-edit:not(.dr) aside,.dr #filebar,.dr #ed,.dr #bin,.dr #empty-guide{display:none}
+  #tb{height:60px}
+  .row{padding-top:12px;padding-bottom:12px}
+  #ifr{grid-row:3;grid-column:1/-1;align-self:stretch;justify-self:stretch;min-height:0}
+  #con{grid-row:4;grid-column:1/-1;height:38dvh}
+  /* プレビューのパス: 操作ボタン列のすぐ上(全画面時は一番下)。読み込むボタンは操作ボタン列側に置く */
+  #previewbar{grid-row:5;grid-column:1/-1;height:44px;min-height:44px;border-bottom:0;border-top:1px solid var(--md-outline)}
+  .m-pv:not(.fs) #pb-go{display:none}
+
+  /* 操作ボタン列(エディター/ファイル: 削除〜貼り付け、プレビュー: 再読み込み・コンソール・全画面・読み込む) */
+  #nav-middle{grid-row:6;grid-column:1/-1;background:var(--md-surface);border-top:1px solid var(--md-outline)}
+  #nav-scroll{height:auto;overflow:hidden;display:flex}
+  #nav-scrollbar{display:none}
+  #nav-scroll button{flex:1 1 0;min-width:0;width:auto;height:56px;margin:0;padding:2px 0;border-radius:0;flex-direction:column;justify-content:center;gap:3px}
+  #nav-scroll .nav-label{display:block;max-width:100%;padding:0 2px;font-size:10px;line-height:1.2;text-align:center;white-space:normal;overflow-wrap:anywhere}
+  .m-pv .mo{display:flex}
+
+  /* 下の切り替え: プレビュー / エディター / ファイル */
+  #nav-head{grid-row:7;grid-column:1/-1;display:flex;padding:0;background:var(--md-surface);border-top:1px solid var(--md-outline)}
+  #nav-head hr{display:none}
+  .nw{display:flex}
+  #nav-head button{flex:1 1 0;min-width:0;width:auto;height:52px;margin:4px 3px;padding:0;flex-direction:column;justify-content:center;align-items:center;gap:2px;border-radius:14px}
+  #nav-head .nav-label{display:block;font-size:11px}
+
+  /* iOS は 16px 未満の入力欄にフォーカスすると画面が拡大されるため */
+  #previewbar>input,#ci,dialog input{font-size:16px}
+  .cm-scroller{font-size:16px}
+}

@@ -10,10 +10,10 @@ import { deleteCharForward, selectAll } from '@codemirror/commands'
 import './style.css'
 
 type Bin = Blob | ArrayBuffer
-type F = { path: string; dir?: boolean; data?: string | Bin }
+type F = { path: string; dir?: boolean; data?: string | Bin; m?: number }
 const TEXT = new Set('html htm css js mjs json svg txt md csv tsv xml'.split(' '))
 const CODE_EXT = 'html htm css js mjs wasm json csv tsv txt md xml'.split(' ')
-const VERSION = '2026.10.16.3'
+const VERSION = '2026.10.16.6'
 const ICON = { code: 'description', file: 'insert_drive_file', dir: 'folder' } as const
 const MT: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', avif: 'image/avif', svg: 'image/svg+xml', wasm: 'application/wasm', mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg', m4a: 'audio/mp4', mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime' }
 const SEED = `<!DOCTYPE html>
@@ -44,17 +44,74 @@ const sizeOf = (d?: string | Bin) => typeof d === 'string' ? new Blob([d]).size 
 const toBlob = (d: Bin, type: string) => d instanceof Blob ? (d.type === type ? d : d.slice(0, d.size, type)) : new Blob([d], { type })
 
 // ---------- IndexedDB ----------
-let db: IDBDatabase
+// 保存の安定化方針
+//  1) 書き込みは1本のキューで順番に実行し、1操作=1トランザクションにする(名前変更・移動・削除・ZIP読み込みも全部まとめて確定。途中で閉じても中途半端にならない)
+//  2) 完了(oncomplete)を待つ。失敗したらDB接続を開き直して1回だけ再試行する(WebKitは接続が切れることがある)
+//  3) 未保存の編集は localStorage に同期で控えを残し、DBへ確定できたら消す。次回起動時に未確定の控えがあれば復元する
+//  4) IndexedDBが使えない環境はメモリだけで動かし、保存できないことを知らせる
+let db: IDBDatabase | null = null, memOnly = false, restricted = false, touched = false
 const req = (r: IDBRequest) => new Promise<any>((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error) })
-const S = (n: string, m: IDBTransactionMode = 'readonly') => db.transaction(n, m).objectStore(n)
+const S = (n: string) => db!.transaction(n).objectStore(n)
 const openDB = () => new Promise<IDBDatabase>((res, rej) => {
   const r = indexedDB.open('madobakocode', 1)
   r.onupgradeneeded = () => { r.result.createObjectStore('fs', { keyPath: 'path' }); r.result.createObjectStore('kv') }
-  r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error)
+  r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); r.onblocked = () => rej(new Error('IndexedDB blocked'))
 })
+async function getDB() {
+  if (db) return db
+  const d = await openDB()
+  const gone = () => { try { d.close() } catch {} if (db === d) db = null }
+  d.onclose = gone; d.onversionchange = gone
+  return (db = d)
+}
+async function commitOnce(names: string[], fn: (t: IDBTransaction) => void) {
+  const t = (await getDB()).transaction(names, 'readwrite', { durability: 'strict' } as any)
+  return new Promise<void>((res, rej) => { t.oncomplete = () => res(); t.onerror = () => rej(t.error); t.onabort = () => rej(t.error || new Error('aborted')); fn(t) })
+}
+let wq: Promise<unknown> = Promise.resolve(), lastWarn = 0
+const enqueue = (names: string[], fn: (t: IDBTransaction) => void): Promise<boolean> => {
+  if (names.includes('fs')) touched = true
+  const p = wq.then(async () => {
+    if (memOnly) return false
+    let err: any
+    for (let i = 0; i < 2; i++) {
+      try { await commitOnce(names, fn); return true } catch (e) { err = e; db = null }
+    }
+    saveFailed(err); return false
+  })
+  wq = p; return p
+}
+function saveFailed(e: any) {
+  console.error('save failed', e)
+  if (Date.now() - lastWarn < 60000 || dlg.open) return
+  lastWarn = Date.now()
+  const q = e?.name === 'QuotaExceededError'
+  dialog((q ? '保存容量が足りません。' : 'ブラウザへの保存に失敗しました。') + '\nこのままページを閉じると、最近の変更が失われる可能性があります。\n「ZIPを書き出す」でバックアップしてください。', '保存できませんでした')
+}
 const files = new Map<string, F>()
-const put = async (f: F) => { files.set(f.path, f); if (f.data instanceof Blob) f.data = await f.data.arrayBuffer(); return req(S('fs', 'readwrite').put(f)) }
-const drop = (p: string) => { files.delete(p); return req(S('fs', 'readwrite').delete(p)) }
+const toBin = async (f: F): Promise<F> => (f.data instanceof Blob ? { ...f, data: await f.data.arrayBuffer() } : f)
+function putAll(list: F[]): Promise<boolean> {
+  if (list.some((f) => f.data instanceof Blob)) return Promise.all(list.map(toBin)).then(putAll)
+  list.forEach((f) => files.set(f.path, f))
+  return enqueue(['fs'], (t) => { const st = t.objectStore('fs'); list.forEach((f) => st.put(f)) })
+}
+const put = (f: F) => putAll([f])
+function dropAll(ps: string[]) {
+  ps.forEach((p) => files.delete(p)); jclear(ps)
+  return enqueue(['fs'], (t) => { const st = t.objectStore('fs'); ps.forEach((p) => st.delete(p)) })
+}
+function replaceAll(list: F[]) {
+  files.clear(); list.forEach((f) => files.set(f.path, f)); jwrite({})
+  return enqueue(['fs'], (t) => { const st = t.objectStore('fs'); st.clear(); list.forEach((f) => st.put(f)) })
+}
+// 未保存の編集の控え(localStorage は同期で書けるので、ページを閉じる瞬間でも残せる)
+const JKEY = 'mbc-journal'
+type J = Record<string, { t: string; ts: number }>
+const jread = (): J => { try { return JSON.parse(localStorage.getItem(JKEY) || '{}') || {} } catch { return {} } }
+const jwrite = (j: J) => { try { Object.keys(j).length ? localStorage.setItem(JKEY, JSON.stringify(j)) : localStorage.removeItem(JKEY) } catch {} }
+const jsave = (p: string, t: string, ts: number) => { if (t.length > 1.5e6) return; const j = jread(); j[p] = { t, ts }; jwrite(j) }
+const jdone = (p: string, ts: number) => { const j = jread(); if (j[p]?.ts === ts) { delete j[p]; jwrite(j) } }
+const jclear = (ps: string[]) => { const j = jread(); let c = false; for (const p of ps) if (j[p]) { delete j[p]; c = true } if (c) jwrite(j) }
 const under = (p: string) => [...files.keys()].filter((k) => k === p || k.startsWith(p + '/'))
 const top = (ps: string[]) => ps.filter((p) => !ps.some((q) => q !== p && p.startsWith(q + '/')))
 const uniq = (p: string) => {
@@ -63,31 +120,39 @@ const uniq = (p: string) => {
   const [a, b] = i > 0 ? [n.slice(0, i), n.slice(i)] : [n, '']
   for (let k = 2; ; k++) { const q = join(d, a + k + b); if (!files.has(q)) return q }
 }
-const mkdirs = async (p: string): Promise<void> => { const d = parent(p); if (!d || files.has(d)) return; await mkdirs(d); await put({ path: d, dir: true }) }
+const missingDirs = (p: string) => { const o: F[] = []; for (let d = parent(p); d && !files.has(d); d = parent(d)) o.push({ path: d, dir: true }); return o }
+const mkdirs = async (p: string) => { const ds = missingDirs(p); if (ds.length) await putAll(ds) }
 
 const kind = (p: string): 'code' | 'file' | 'dir' => { const f = files.get(p); return f?.dir ? 'dir' : typeof f?.data === 'string' ? 'code' : 'file' }
 
 // ---------- state ----------
-let mode: 'edit' | 'pv' = 'edit', cur = '', last = '', previewPath = 'index.html', fs = false, drawer = false, consoleBeforeFullscreen = false
+let mode: 'edit' | 'pv' = 'edit', cur = '', last = '', previewPath = 'index.html', fs = false, drawer = false, consoleBeforeFullscreen = false, navOpen = false
 let open = new Set<string>(), sel = new Set<string>()
 let focus: 'tree' | 'editor' = 'tree'
 let clip: { p: string[]; cut: boolean } | null = null
 let dirty = false, timer: any = 0, binUrl = ''
-const saveUI = () => req(S('kv', 'readwrite').put({ mode, cur, open: [...open] }, 'ui'))
+const saveUI = () => { const v = { mode, cur, open: [...open], nav: navOpen }; return enqueue(['kv'], (t) => { t.objectStore('kv').put(v, 'ui') }) }
+
+// ---------- layout ----------
+// 縦長(portrait)かつ幅600px未満=スマホ、600px以上=タブレット縦向き。style.css の @media と同じ条件にすること
+const MQ_PHONE = matchMedia('(orientation: portrait) and (max-width: 599px)')
+const MQ_TABLET = matchMedia('(orientation: portrait) and (min-width: 600px)')
+const MQ_NARROW = matchMedia('(orientation: landscape) and (max-width: 879px)') // 横長で狭い: 左メニューを短くする(CSS側と揃える)
+const layout = (): 'phone' | 'tablet' | 'desktop' => (MQ_PHONE.matches ? 'phone' : MQ_TABLET.matches ? 'tablet' : 'desktop')
 
 // ---------- DOM ----------
 const B = (a: string, t: string, c = '', l = t) => `<button data-a="${a}" class="${c}" title="${l}" aria-label="${l}"><span class="material-symbols-rounded">${t}</span><span class="nav-label">${l}</span></button>`
 const TB = (a: string, t: string, l: string) => `<button data-a="${a}" title="${l}" aria-label="${l}"><span class="material-symbols-rounded">${t}</span><span class="tl">${l}</span></button>`
-$('#app').innerHTML = `<nav id="ic"><div id="nav-brand"><img src="icon.svg" alt=""><span>MadoBakoCode</span></div><div id="nav-head">${B('pv', 'visibility', '', 'プレビュー') + B('ed', 'edit', '', 'エディター') + B('dr', 'menu', 'nw', 'ファイル')}<hr></div><div id="nav-middle"><div id="nav-scroll">
+$('#app').innerHTML = `<nav id="ic"><div id="nav-brand" data-a="nav" role="button" title="MadoBakoCode" aria-label="メニューの文字表示を切り替え"><img src="icon.svg" alt=""><span>MadoBakoCode</span><small class="ver-m">V ${VERSION}</small></div><div id="nav-head">${B('pv', 'visibility', '', 'プレビュー') + B('dr', 'menu', 'nw', 'ファイル') + B('ed', 'edit', '', 'エディター')}<hr></div><div id="nav-middle"><div id="nav-scroll">
 ${[['del', 'delete', '削除'], ['a', 'select_all', 'すべて選択'], ['ua', 'deselect', 'すべて選択解除'], ['x', 'content_cut', '切り取り'], ['c', 'content_copy', 'コピー'], ['v', 'content_paste', '貼り付け']].map(([a, t, l]) => B(a, t, 'eb', l)).join('')}
-${[['rl', 'refresh', '再読み込み'], ['co', 'terminal', 'コンソール'], ['fs', 'fullscreen', '全画面']].map(([a, t, l]) => B(a, t, 'pvb', l)).join('')}</div><div id="nav-scrollbar"><div id="nav-thumb"></div></div></div>
+${[['rl', 'refresh', '再読み込み'], ['co', 'terminal', 'コンソール'], ['fs', 'fullscreen', '全画面']].map(([a, t, l]) => B(a, t, 'pvb', l)).join('') + B('pgo', 'arrow_forward', 'pvb mo', '読み込む')}</div><div id="nav-scrollbar"><div id="nav-thumb"></div></div></div>
 <div id="nav-foot"><hr>${B('imp', 'folder_zip', '', 'ZIPを読み込む') + B('exp', 'file_save', '', 'ZIPを書き出す') + B('rst', 'restart_alt', '', 'すべてリセット')}<div id="ver">V ${VERSION}</div></div></nav>
 <aside id="side"><div id="hd">FILES <span id="use"></span></div><div id="tb">${TB('add', 'code', 'コードを追加') + TB('dir', 'create_new_folder', 'フォルダを追加') + TB('up', 'upload_file', 'ファイルを追加') + TB('ren', 'drive_file_rename_outline', '名前を変更')}</div><div id="tree-area"><div id="tree" data-p="" data-d="1"></div><div id="tree-scrollbar"><div id="tree-thumb"></div></div></div></aside>
-<main><div id="filebar"><span id="file-path"></span><span id="file-size"></span></div><div id="empty-guide">ファイルを選んで表示</div><div id="ed"></div><div id="bin"></div><div id="pv"><div id="previewbar"><button data-a="rl" id="pb-rl" title="再読み込み" aria-label="再読み込み"><span class="material-symbols-rounded">refresh</span></button><span class="material-symbols-rounded">route</span><input id="preview-path" value="/index.html" aria-label="プレビューするファイルのパス"><button data-a="pgo" aria-label="このパスをプレビュー"><span class="material-symbols-rounded">arrow_forward</span></button><button data-a="fs" id="pb-fs" title="全画面" aria-label="全画面"><span class="material-symbols-rounded" id="pb-fs-ic">fullscreen</span></button></div><iframe id="ifr" sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-downloads allow-pointer-lock" allow="autoplay; fullscreen; clipboard-write"></iframe>
-<div id="con" hidden><div id="ch">CONSOLE<span id="cc"></span><button data-a="cclr">Clear</button><button data-a="co" aria-label="コンソールを閉じる"><span class="material-symbols-rounded">expand_more</span></button></div><div id="cl"></div><input id="ci" placeholder="> JavaScript" autocapitalize="off" autocorrect="off"></div></div></main>
+<main><div id="filebar"><span id="file-path"></span><span id="file-size"></span></div><div id="empty-guide">ファイルを選んで表示</div><div id="ed"></div><div id="bin"></div><div id="pv"><div id="previewbar"><button data-a="rl" id="pb-rl" title="再読み込み" aria-label="再読み込み"><span class="material-symbols-rounded">refresh</span></button><span class="material-symbols-rounded">route</span><input id="preview-path" value="/index.html" aria-label="プレビューするファイルのパス"><button data-a="pgo" id="pb-go" aria-label="このパスをプレビュー"><span class="material-symbols-rounded">arrow_forward</span></button><button data-a="fs" id="pb-fs" title="全画面" aria-label="全画面"><span class="material-symbols-rounded" id="pb-fs-ic">fullscreen</span></button></div><iframe id="ifr" sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-downloads allow-pointer-lock" allow="autoplay; fullscreen; clipboard-write"></iframe>
+<div id="con" hidden><div id="ch">CONSOLE<span id="cc"></span><button data-a="cclr">Clear</button><button data-a="ccp" id="ccp" title="コンソールの内容をコピー" aria-label="コンソールの内容をコピー"><span class="material-symbols-rounded" id="ccp-ic">content_copy</span></button><button data-a="co" aria-label="コンソールを閉じる"><span class="material-symbols-rounded">expand_more</span></button></div><div id="cl"></div><input id="ci" placeholder="> JavaScript" autocapitalize="off" autocorrect="off"></div></div></main>
 <div id="ghost" hidden></div><div id="drop-line" hidden></div>
 <input type="file" id="upl" multiple hidden><input type="file" id="zin" accept=".zip,application/zip" hidden>
-<dialog id="dlg"><form method="dialog"><h2 id="dlg-title"></h2><p id="dlg-message"></p><input id="dlg-input" autocomplete="off"><div class="acts"><button value="cancel" id="dlg-cancel">キャンセル</button><button value="ok" id="dlg-ok">OK</button></div></form></dialog>
+<dialog id="dlg"><form method="dialog"><h2 id="dlg-title"></h2><p id="dlg-message"></p><input id="dlg-input" autocomplete="off"><div class="acts"><button type="button" id="dlg-cancel">キャンセル</button><button value="ok" id="dlg-ok">OK</button></div></form></dialog>
 <dialog id="cdlg"><form method="dialog" id="cform"><h2>コードを追加</h2>
 <div id="c-main"><p>ファイル名を入力するか、下のボタンで作成します<br>使える拡張子: ${CODE_EXT.join(' ')}</p><input id="c-name" placeholder="例: a.txt / sub/b.js" autocomplete="off" autocapitalize="off" autocorrect="off"><div id="c-quick"><button type="button" data-q="html">HTML</button><button type="button" data-q="css">CSS</button><button type="button" data-q="js">JS</button></div></div>
 <div id="c-html" hidden><p>HTMLの中身を選んでください</p><label><input type="radio" name="hs" value="empty" checked>空っぽ</label><label><input type="radio" name="hs" value="seed">最初のページを入れる</label></div>
@@ -100,9 +165,10 @@ const ci = $('#ci') as HTMLInputElement, upl = $('#upl') as HTMLInputElement, zi
 const dlg = $('#dlg') as HTMLDialogElement, dlgTitle = $('#dlg-title'), dlgMessage = $('#dlg-message'), dlgInput = $('#dlg-input') as HTMLInputElement
 function dialog(message: string, title = '確認', input = false, value = ''): Promise<string | null> {
   dlgTitle.textContent = title; dlgMessage.textContent = message; dlgInput.hidden = !input; dlgInput.value = value
-  dlg.showModal(); if (input) setTimeout(() => dlgInput.focus(), 0)
+  dlg.returnValue = ''; dlg.showModal(); if (input) setTimeout(() => dlgInput.focus(), 0) // returnValue を戻さないと、Escで閉じたとき前回のOKが残る
   return new Promise((resolve) => dlg.addEventListener('close', () => resolve(dlg.returnValue === 'ok' ? (input ? dlgInput.value : 'ok') : null), { once: true }))
 }
+$('#dlg-cancel').addEventListener('click', () => dlg.close('cancel')) // Enterで確定したとき「キャンセル」にならないよう、OKだけを送信ボタンにする
 const ask = (message: string, title = '確認') => dialog(message, title).then((v) => v !== null)
 const promptInApp = (message: string, value = '', title = '入力') => dialog(message, title, true, value).then((v) => typeof v === 'string' ? v : null)
 
@@ -110,7 +176,7 @@ const promptInApp = (message: string, value = '', title = '入力') => dialog(me
 const lang = (p: string): any => ({ html: html(), htm: html(), svg: html(), xml: html(), css: css(), js: javascript(), mjs: javascript(), json: json(), md: markdown() } as any)[ext(p)] || []
 const upd = EditorView.updateListener.of((u) => {
   if (!u.docChanged) return
-  dirty = true; clearTimeout(timer); timer = setTimeout(flush, 500)
+  dirty = true; clearTimeout(timer); timer = setTimeout(flush, 300)
 })
 const view = new EditorView({ parent: ed, state: EditorState.create({ doc: '', extensions: [basicSetup] }) })
 view.dom.addEventListener('focusin', () => (focus = 'editor'))
@@ -119,7 +185,13 @@ function flush() {
   if (!dirty || !cur) return
   dirty = false
   const f = files.get(cur)
-  if (f && typeof f.data === 'string') { f.data = view.state.doc.toString(); put(f); useSize(); updateFilebar() }
+  if (f && typeof f.data === 'string') {
+    const text = view.state.doc.toString(), ts = Date.now(), p = f.path
+    f.data = text; f.m = ts
+    jsave(p, text, ts) // DBへ確定できるまで控えを残す
+    put(f).then((ok) => { if (ok) jdone(p, ts) })
+    useSize(); updateFilebar()
+  }
 }
 const formatBytes = (n: number) => n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(2)} MB`
 function updateFilebar() {
@@ -190,19 +262,32 @@ function useSize() {
   $('#use').textContent = (n / 1048576).toFixed(1) + ' MB'
 }
 function render() {
-  document.body.className = (mode === 'pv' ? 'm-pv' : 'm-edit') + (fs ? ' fs' : '') + (drawer ? ' dr' : '')
+  const dv = drawer && layout() === 'phone' // スマホではファイル一覧を全面表示するビューがある
+  document.body.className = (mode === 'pv' ? 'm-pv' : 'm-edit') + (fs ? ' fs' : '') + (dv ? ' dr' : '') + (navOpen ? ' nopen' : '')
   $('#pb-fs-ic').textContent = fs ? 'fullscreen_exit' : 'fullscreen'
   $('#pb-fs').title = fs ? '全画面を終了' : '全画面'; $('#pb-fs').setAttribute('aria-label', fs ? '全画面を終了' : '全画面')
   document.querySelectorAll('[data-a=pv]').forEach((b) => b.classList.toggle('on', mode === 'pv'))
-  document.querySelectorAll('[data-a=ed]').forEach((b) => b.classList.toggle('on', mode === 'edit'))
-  renderTree(); fitToolbar()
+  document.querySelectorAll('[data-a=ed]').forEach((b) => b.classList.toggle('on', mode === 'edit' && !dv))
+  document.querySelectorAll('[data-a=dr]').forEach((b) => b.classList.toggle('on', mode === 'edit' && dv))
+  renderTree(); fitToolbar(); fitViewport(); view.requestMeasure()
 }
 // ファイル一覧のツールバー下端を、左アイコン列の区切り線(hr)の位置に合わせる
 function fitToolbar() {
+  if (layout() === 'phone') { tbar.style.height = ''; return } // スマホは CSS で高さを決める
   const hr = document.querySelector('#nav-head hr') as HTMLElement
   const h = hr.getBoundingClientRect().bottom - $('#hd').getBoundingClientRect().bottom
   if (h > 0) tbar.style.height = h + 'px'
 }
+// スマホ/タブレットでソフトキーボードが出ても、下のボタン列がキーボードの上に残るよう、見えている領域(visualViewport)に高さを合わせる
+function fitViewport() {
+  const a = $('#app'), v = window.visualViewport
+  if (layout() === 'desktop' || !v) { a.style.height = ''; a.style.transform = ''; return }
+  a.style.height = v.height + 'px'
+  a.style.transform = v.offsetTop > 0 ? `translateY(${v.offsetTop}px)` : ''
+}
+window.visualViewport?.addEventListener('resize', fitViewport)
+window.visualViewport?.addEventListener('scroll', fitViewport)
+for (const q of [MQ_PHONE, MQ_TABLET]) q.addEventListener('change', () => render())
 const toggle = (p: string) => { sel.has(p) ? sel.delete(p) : sel.add(p); renderTree() }
 
 let dr: any = null, lp: any = 0, skip = false
@@ -305,15 +390,19 @@ tree.addEventListener('click', (e) => {
 
 // ---------- file operations ----------
 async function mv(o: string, n: string) {
-  if (o === n || files.has(n) || n.startsWith(o + '/')) return
-  for (const k of under(o)) { const f = files.get(k)!; await drop(k); await put({ ...f, path: n + k.slice(o.length) }) }
+  if (o === n || files.has(n) || n.startsWith(o + '/')) return false
+  const ks = under(o), recs = ks.map((k) => ({ ...files.get(k)!, path: n + k.slice(o.length) }))
+  ks.forEach((k) => files.delete(k)); recs.forEach((r) => files.set(r.path, r))
   const m = (x: string) => (x === o || x.startsWith(o + '/') ? n + x.slice(o.length) : x)
   cur = m(cur); open = new Set([...open].map(m)); last = m(last)
+  // 旧パスの削除と新パスの追加を1トランザクションで行う(途中で閉じてもファイルが消えない)
+  if (await enqueue(['fs'], (t) => { const st = t.objectStore('fs'); ks.forEach((k) => st.delete(k)); recs.forEach((r) => st.put(r)) })) jclear(ks)
+  return true
 }
 async function cp(s: string, d: string) {
   if (d === s || d.startsWith(s + '/')) return
   const t = uniq(join(d, base(s)))
-  for (const k of under(s)) await put({ ...files.get(k)!, path: t + k.slice(s.length) })
+  await putAll(under(s).map((k) => ({ ...files.get(k)!, path: t + k.slice(s.length) })))
 }
 const targets = () => (sel.size ? [...sel] : cur ? [cur] : [])
 const destDir = () => { const t = [...sel][0] ?? (last || cur); if (!t) return ''; return files.get(t)?.dir ? t : parent(t) }
@@ -343,7 +432,9 @@ function deleteMessage(ts: string[]) {
 async function removeTargets() {
   const ts = top(targets())
   if (!ts.length || !(await ask(deleteMessage(ts), '削除の確認'))) return
-  for (const t of ts) for (const k of under(t)) { if (k === cur) { cur = ''; dirty = false }; await drop(k) }
+  const ks = ts.flatMap((t) => under(t))
+  if (ks.includes(cur)) { cur = ''; dirty = false }
+  await dropAll(ks)
   sel.clear(); loadView(); saveUI(); render()
 }
 async function paste() {
@@ -355,7 +446,9 @@ async function paste() {
   sel.clear(); saveUI(); render()
 }
 function kb(k: string) {
-  if (focus === 'editor' && mode === 'edit' && !ed.hidden) {
+  // スマホは表示中のビュー(エディター/ファイル)で対象が決まる。それ以外は最後にフォーカスした側
+  const onEditor = layout() === 'phone' ? !drawer : focus === 'editor'
+  if (onEditor && mode === 'edit' && !ed.hidden) {
     view.focus()
     const s = view.state.selection.main, txt = view.state.sliceDoc(s.from, s.to)
     if (k === 'a') selectAll(view)
@@ -391,6 +484,17 @@ function goPreview() { previewPath = normalizedPreviewPath(); reload() }
 // 同じ内容(レベル・文面・ファイル・行)が連続したら1行にまとめて回数を出す
 let lastLine: { key: string; el: HTMLElement; n: number } | null = null, errN = 0, warnN = 0
 function summary() { ccEl.textContent = (errN ? ` エラー ${errN}` : '') + (warnN ? ` 警告 ${warnN}` : '') }
+function copyConsole() {
+  const t = [...cl.children].map((d) => {
+    const lv = d.classList.contains('error') ? '[error] ' : d.classList.contains('warn') ? '[warn] ' : ''
+    const c = d.querySelector('.lc') as HTMLElement, src = d.querySelector('.ls')
+    return lv + (d.querySelector('.lm')?.textContent ?? '') + (c && !c.hidden ? ` (x${c.textContent})` : '') + (src ? ` (${src.textContent})` : '')
+  }).join('\n')
+  if (!t) return
+  const ok = () => { const ic = $('#ccp-ic'); ic.textContent = 'check'; setTimeout(() => { ic.textContent = 'content_copy' }, 1200) }
+  const fb = () => { const x = document.createElement('textarea'); x.value = t; x.style.cssText = 'position:fixed;opacity:0'; document.body.append(x); x.select(); try { document.execCommand('copy'); ok() } catch {} x.remove() }
+  navigator.clipboard?.writeText ? navigator.clipboard.writeText(t).then(ok, fb) : fb()
+}
 function clearConsole() { cl.innerHTML = ''; lastLine = null; errN = 0; warnN = 0; summary() }
 function line(l: string, t: string, f = '', n = 0, c = 0) {
   if (l === 'error') errN++; else if (l === 'warn') warnN++
@@ -416,7 +520,7 @@ function line(l: string, t: string, f = '', n = 0, c = 0) {
   if (l === 'error' && con.hidden) $('[data-a=co]').classList.add('bad')
 }
 async function jump(f: string, n: number) {
-  await setMode('edit'); select(f); render()
+  drawer = false; await setMode('edit'); select(f); render()
   if (n > 0 && typeof files.get(f)?.data === 'string') {
     const pos = view.state.doc.line(Math.min(n, view.state.doc.lines)).from
     view.dispatch({ selection: { anchor: pos }, effects: EditorView.scrollIntoView(pos, { y: 'center' }) }); view.focus()
@@ -472,15 +576,19 @@ zin.addEventListener('change', async () => {
   try {
     const zip = await JSZip.loadAsync(z)
     const es = Object.values(zip.files).filter((e) => !e.name.startsWith('__MACOSX/') && !e.name.endsWith('.DS_Store'))
-    await req(S('fs', 'readwrite').clear()); files.clear(); cur = ''; last = ''; open.clear(); sel.clear(); dirty = false
+    // 先にすべて読み取ってから、全置換を1トランザクションで確定する(読み取りに失敗しても元のデータは残る)
+    const recs = new Map<string, F>()
     for (const e of es) {
       const p = e.name.replace(/\/$/, '')
       if (!p) continue
-      await mkdirs(p)
-      if (e.dir) await put({ path: p, dir: true })
-      else if (isText(p)) await put({ path: p, data: await e.async('string') })
-      else await put({ path: p, data: await e.async('arraybuffer') })
+      for (let d = parent(p); d; d = parent(d)) if (!recs.has(d)) recs.set(d, { path: d, dir: true })
+      if (e.dir) recs.set(p, { path: p, dir: true })
+      else if (isText(p)) recs.set(p, { path: p, data: await e.async('string') })
+      else recs.set(p, { path: p, data: await e.async('arraybuffer') })
     }
+    flush(); dirty = false
+    await replaceAll([...recs.values()])
+    cur = ''; last = ''; open.clear(); sel.clear()
     loadView(); saveUI(); render()
   } catch (x) { dialog('ZIPを読み込めませんでした: ' + x, '読み込みエラー') }
 })
@@ -503,29 +611,39 @@ upl.addEventListener('change', async () => {
 
 // ---------- actions ----------
 const A: Record<string, () => any> = {
-  pv: () => setMode('pv'), ed: () => setMode('edit'), dr: () => { drawer = !drawer; render() },
+  pv: () => setMode('pv'), ed: () => { drawer = false; return setMode('edit') },
+  dr: () => { drawer = true; return mode === 'edit' ? render() : setMode('edit') },
+  nav: () => { if (layout() !== 'tablet' && !MQ_NARROW.matches) return; navOpen = !navOpen; saveUI(); render() }, // タブレット縦向き: ロゴで文字表示を切り替え
   add: async () => { const r = await codeDialog(); if (r) return make(r.name, r.seed ? SEED : '') },
   dir: async () => { const n = await promptInApp('フォルダ名', '', 'フォルダを追加'); if (!n?.trim()) return; const p = join(destDir(), n.trim().replace(/^\/|\/$/g, '')); if (files.has(p)) return dialog('同名のフォルダがあります', '追加できません'); await mkdirs(p + '/x'); await put({ path: p, dir: true }); open.add(p); saveUI(); render() },
   up: () => upl.click(),
   ren: async () => {
     const t = targets(); if (t.length !== 1) return dialog('名前を変更するファイルを1つ選んでください', '名前を変更できません')
-    const n = await promptInApp('新しい名前', base(t[0]), '名前を変更'); if (!n?.trim() || n.includes('/')) return
-    flush(); await mv(t[0], join(parent(t[0]), n.trim())); sel.clear(); saveUI(); render()
+    const n = await promptInApp('新しい名前', base(t[0]), '名前を変更'); if (n === null) return
+    const name = n.trim()
+    if (!name || name === base(t[0])) return
+    if (name.includes('/')) return dialog('名前に / は使えません', '名前を変更できません')
+    const np = join(parent(t[0]), name)
+    if (files.has(np)) return dialog(`同じ場所に「${name}」がすでにあります`, '名前を変更できません')
+    flush(); const before = cur
+    if (!(await mv(t[0], np))) return dialog('名前を変更できませんでした', 'エラー')
+    sel.clear(); saveUI(); render()
+    if (cur !== before) loadView() // 拡張子が変わったときの色分けとパス表示を更新
   },
   del: () => kb('del'), a: () => kb('a'), ua: () => { sel.clear(); renderTree() }, x: () => kb('x'), c: () => kb('c'), v: () => kb('v'),
   rl: reload,
   co: () => { con.hidden = !con.hidden; $('[data-a=co]').classList.remove('bad') }, pgo: goPreview,
-  cclr: clearConsole,
+  cclr: clearConsole, ccp: copyConsole,
   fs: () => { if (!fs) { consoleBeforeFullscreen = !con.hidden; con.hidden = true } else con.hidden = !consoleBeforeFullscreen; fs = !fs; render() },
   imp: () => zin.click(),
   exp: async () => {
     flush(); const zip = new JSZip()
     files.forEach((f) => { f.dir ? zip.folder(f.path) : zip.file(f.path, f.data as any) })
-    download(await zip.generateAsync({ type: 'blob' }), 'madobakocode.zip')
+    download(await zip.generateAsync({ type: 'blob' }), 'madobakocode.zip'); touched = false
   },
   rst: async () => {
     if (!(await ask('すべてのファイルを削除し、初期状態に戻します。よろしいですか？', 'リセットの確認'))) return
-    await req(S('fs', 'readwrite').clear()); files.clear(); await put({ path: 'index.html', data: SEED })
+    await replaceAll([{ path: 'index.html', data: SEED }])
     cur = ''; last = ''; open.clear(); sel.clear(); dirty = false; loadView(); saveUI(); render()
   },
 }
@@ -545,16 +663,46 @@ document.addEventListener('keydown', (e) => {
 })
 document.addEventListener('pointerdown', (e) => { if ((e.target as HTMLElement).closest('[data-a]')) e.preventDefault() })
 document.addEventListener('click', (e) => { const b = (e.target as HTMLElement).closest('[data-a]') as HTMLElement; if (b) A[b.dataset.a!]?.() })
-addEventListener('pagehide', () => { flush(); saveUI() })
-document.addEventListener('visibilitychange', () => { if (document.hidden) { flush(); saveUI() } })
+// 閉じる/裏に回る瞬間: 編集を確定し、まだDBに入っていない控えがあれば書き直す
+function flushAll() {
+  flush()
+  const j = jread()
+  for (const p of Object.keys(j)) { const f = files.get(p), ts = j[p].ts; if (f && typeof f.data === 'string') put(f).then((ok) => { if (ok) jdone(p, ts) }) }
+  saveUI()
+}
+addEventListener('pagehide', flushAll)
+document.addEventListener('visibilitychange', () => { if (document.hidden) flushAll() })
+addEventListener('pageshow', (e) => { if ((e as PageTransitionEvent).persisted) { db = null; saveUI() } }) // 戻る/進むの復元後は接続が切れていることがある
+// 保存が一時的になりうる環境(プライベートブラウズ等)では、閉じる前に確認を出す(対応しているブラウザのみ)
+addEventListener('beforeunload', (e) => { if ((restricted || memOnly) && touched) { e.preventDefault(); e.returnValue = '' } })
 
 // ---------- boot ----------
+// WebKitのプライベートブラウズなどは、IndexedDBにBlob/Fileを保存できない(=データが一時的にしか残らない)。その目印として検出する
+async function probeRestricted() {
+  try {
+    await commitOnce(['kv'], (t) => { t.objectStore('kv').put(new Blob(['x']), '__probe') })
+    await commitOnce(['kv'], (t) => { t.objectStore('kv').delete('__probe') })
+    return false
+  } catch { return true }
+}
 ;(async () => {
-  db = await openDB()
-  for (const f of await req(S('fs').getAll())) files.set(f.path, f)
+  let u: any = null
+  try {
+    await getDB()
+    for (const f of await req(S('fs').getAll())) files.set(f.path, f)
+    u = await req(S('kv').get('ui'))
+    const legacy = [...files.values()].filter((f) => f.data instanceof Blob) // 旧バージョンがBlobで保存した分をArrayBufferへ移行
+    if (legacy.length) await putAll(legacy).catch(() => {})
+  } catch (e) { console.error('IndexedDB unavailable', e); memOnly = true; db = null }
   if (!files.has('index.html')) await put({ path: 'index.html', data: SEED })
-  const u = await req(S('kv').get('ui'))
-  if (u) { cur = files.has(u.cur) ? u.cur : ''; open = new Set(u.open || []); mode = u.mode || 'edit' }
+  // 前回、閉じる瞬間にDBへ確定できなかった編集があれば復元する
+  const j = jread(), back: F[] = []
+  for (const [p, e] of Object.entries(j)) {
+    const f = files.get(p)
+    if (f && typeof f.data === 'string' && e.ts > (f.m ?? 0) && f.data !== e.t) { f.data = e.t; f.m = e.ts; back.push(f) }
+  }
+  if (back.length) { const ok = await putAll(back); if (ok) jwrite({}) } else if (!memOnly) jwrite({})
+  if (u) { cur = files.has(u.cur) ? u.cur : ''; open = new Set(u.open || []); mode = u.mode || 'edit'; navOpen = !!u.nav }
   navigator.storage?.persist?.()
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register(new URL('sw.js', document.baseURI).href).then(() => navigator.serviceWorker.ready).then(async () => {
@@ -565,4 +713,11 @@ document.addEventListener('visibilitychange', () => { if (document.hidden) { flu
   }
   loadView(); render()
   if (mode === 'pv') { const m = mode; mode = 'edit'; setMode(m) }
+  if (back.length) dialog(`前回、保存が完了する前に閉じられた編集を復元しました\n${back.map((f) => '・' + f.path).join('\n')}`, '編集を復元しました')
+  else if (memOnly) dialog('この環境ではブラウザの保存機能（IndexedDB）が使えません。\nページを閉じると内容が消えます。\n作業のあとは「ZIPを書き出す」でバックアップしてください。', '保存できない環境です')
+  else if (await probeRestricted()) {
+    restricted = true
+    let seen = false; try { seen = !!sessionStorage.getItem('mbc-warned'); sessionStorage.setItem('mbc-warned', '1') } catch {}
+    if (!seen) dialog('この環境（プライベートブラウズなど）では、ブラウザがデータを一時的にしか保持しない可能性があります。\nタブやアプリを閉じるとファイルが消えることがあります。\n作業のあとは「ZIPを書き出す」でバックアップしてください。', '保存についてのご注意')
+  }
 })()
