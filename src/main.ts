@@ -9,10 +9,11 @@ import { markdown } from '@codemirror/lang-markdown'
 import { deleteCharForward, selectAll } from '@codemirror/commands'
 import './style.css'
 
-type F = { path: string; dir?: boolean; data?: string | Blob }
+type Bin = Blob | ArrayBuffer
+type F = { path: string; dir?: boolean; data?: string | Bin }
 const TEXT = new Set('html htm css js mjs json svg txt md csv tsv xml'.split(' '))
 const CODE_EXT = 'html htm css js mjs wasm json csv tsv txt md xml'.split(' ')
-const VERSION = '2026.10.16.2'
+const VERSION = '2026.10.16.3'
 const ICON = { code: 'description', file: 'insert_drive_file', dir: 'folder' } as const
 const MT: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', avif: 'image/avif', svg: 'image/svg+xml', wasm: 'application/wasm', mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg', m4a: 'audio/mp4', mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime' }
 const SEED = `<!DOCTYPE html>
@@ -37,6 +38,10 @@ const parent = (p: string) => (p.includes('/') ? p.slice(0, p.lastIndexOf('/')) 
 const join = (d: string, n: string) => (d ? d + '/' + n : n)
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]!))
 const isText = (p: string) => TEXT.has(ext(p))
+// WebKit(プライベート/一時セッション)はIndexedDBにBlob/Fileを保存できないため、バイナリはArrayBufferで保持する
+const mimeOf = (p: string, d?: Bin) => MT[ext(p)] || (d instanceof Blob ? d.type : '') || 'application/octet-stream'
+const sizeOf = (d?: string | Bin) => typeof d === 'string' ? new Blob([d]).size : d instanceof Blob ? d.size : d ? d.byteLength : 0
+const toBlob = (d: Bin, type: string) => d instanceof Blob ? (d.type === type ? d : d.slice(0, d.size, type)) : new Blob([d], { type })
 
 // ---------- IndexedDB ----------
 let db: IDBDatabase
@@ -48,7 +53,7 @@ const openDB = () => new Promise<IDBDatabase>((res, rej) => {
   r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error)
 })
 const files = new Map<string, F>()
-const put = (f: F) => { files.set(f.path, f); return req(S('fs', 'readwrite').put(f)) }
+const put = async (f: F) => { files.set(f.path, f); if (f.data instanceof Blob) f.data = await f.data.arrayBuffer(); return req(S('fs', 'readwrite').put(f)) }
 const drop = (p: string) => { files.delete(p); return req(S('fs', 'readwrite').delete(p)) }
 const under = (p: string) => [...files.keys()].filter((k) => k === p || k.startsWith(p + '/'))
 const top = (ps: string[]) => ps.filter((p) => !ps.some((q) => q !== p && p.startsWith(q + '/')))
@@ -118,7 +123,7 @@ function flush() {
 }
 const formatBytes = (n: number) => n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(2)} MB`
 function updateFilebar() {
-  const f = files.get(cur), n = !f ? 0 : typeof f.data === 'string' ? new Blob([f.data]).size : f.data?.size || 0
+  const f = files.get(cur), n = sizeOf(f?.data)
   filePathEl.textContent = f && !f.dir ? '/' + cur : ''
   fileSizeEl.textContent = f && !f.dir ? formatBytes(n) : ''
 }
@@ -134,10 +139,10 @@ function loadView() {
     ed.hidden = false; bin.hidden = true; return
   }
   ed.hidden = true; bin.hidden = false
-  const blob = f.data as Blob, t = MT[ext(cur)] || blob.type
-  binUrl = URL.createObjectURL(blob.type === t ? blob : blob.slice(0, blob.size, t))
+  const t = mimeOf(cur, f.data as Bin)
+  binUrl = URL.createObjectURL(toBlob(f.data as Bin, t))
   const k = t.split('/')[0]
-  bin.innerHTML = k === 'image' ? `<img src="${binUrl}">` : k === 'audio' ? `<audio src="${binUrl}" controls></audio>` : k === 'video' ? `<video src="${binUrl}" controls playsinline></video>` : `<div>${esc(base(cur))}<br>${(blob.size / 1024) | 0} KB（プレビュー非対応）</div>`
+  bin.innerHTML = k === 'image' ? `<img src="${binUrl}">` : k === 'audio' ? `<audio src="${binUrl}" controls></audio>` : k === 'video' ? `<video src="${binUrl}" controls playsinline></video>` : `<div>${esc(base(cur))}<br>${(sizeOf(f.data) / 1024) | 0} KB（プレビュー非対応）</div>`
 }
 function updateScrollbar(scroll: HTMLElement, bar: HTMLElement, thumb: HTMLElement) {
   const max = Math.max(0, scroll.scrollHeight - scroll.clientHeight)
@@ -181,7 +186,7 @@ function rows(d: string, depth: number, out: string[]) {
 }
 function renderTree() { const o: string[] = []; rows('', 0, o); tree.innerHTML = o.join(''); useSize(); requestAnimationFrame(() => { updateNavScrollbar(); updateTreeScrollbar() }) }
 function useSize() {
-  let n = 0; files.forEach((f) => { n += typeof f.data === 'string' ? f.data.length : f.data ? f.data.size : 0 })
+  let n = 0; files.forEach((f) => { n += sizeOf(f.data) })
   $('#use').textContent = (n / 1048576).toFixed(1) + ' MB'
 }
 function render() {
@@ -315,7 +320,7 @@ const destDir = () => { const t = [...sel][0] ?? (last || cur); if (!t) return '
 async function make(path: string, data = '') {
   if (files.has(path)) return dialog('同名のファイルがあります', '追加できません')
   if (!CODE_EXT.includes(ext(path))) return dialog(`使える拡張子は次のとおりです\n${CODE_EXT.join(' ')}`, '追加できません')
-  flush(); await mkdirs(path); await put({ path, data: ext(path) === 'wasm' ? new Blob([], { type: 'application/wasm' }) : data })
+  flush(); await mkdirs(path); await put({ path, data: ext(path) === 'wasm' ? new ArrayBuffer(0) : data })
   const d = parent(path); if (d) open.add(d)
   select(path); render()
 }
@@ -474,19 +479,26 @@ zin.addEventListener('change', async () => {
       await mkdirs(p)
       if (e.dir) await put({ path: p, dir: true })
       else if (isText(p)) await put({ path: p, data: await e.async('string') })
-      else { const b = await e.async('blob'); await put({ path: p, data: b.slice(0, b.size, MT[ext(p)] || 'application/octet-stream') }) }
+      else await put({ path: p, data: await e.async('arraybuffer') })
     }
     loadView(); saveUI(); render()
   } catch (x) { dialog('ZIPを読み込めませんでした: ' + x, '読み込みエラー') }
 })
 upl.addEventListener('change', async () => {
   const d = destDir()
-  for (const f of [...upl.files!]) {
-    if (f.size > 50e6 && !(await ask(`${f.name} は ${(f.size / 1e6) | 0}MB あります。追加しますか？`, '大きなファイル'))) continue
-    const p = uniq(join(d, f.name)); await mkdirs(p)
-    await put({ path: p, data: isText(p) ? await f.text() : f })
+  const list = Array.from(upl.files ?? [])
+  upl.value = ''
+  try {
+    for (const f of list) {
+      if (f.size > 50e6 && !(await ask(`${f.name} は ${(f.size / 1e6) | 0}MB あります。追加しますか？`, '大きなファイル'))) continue
+      const p = uniq(join(d, f.name)); await mkdirs(p)
+      await put({ path: p, data: isText(p) ? await f.text() : await f.arrayBuffer() })
+    }
+  } catch (x) {
+    dialog('ファイルを追加できませんでした\n' + x, 'エラー')
+  } finally {
+    if (d) open.add(d); render()
   }
-  upl.value = ''; if (d) open.add(d); render()
 })
 
 // ---------- actions ----------
